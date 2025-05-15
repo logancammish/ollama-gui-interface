@@ -10,11 +10,16 @@ impl Program {
         )
         .padding(10)
         .size(20)
-        .width(iced::Length::Fill);
+        .width(iced::Length::Fill)
+        .on_input(|input| { Message::UpdatePrompt(input) });
 
        
-        return container(widget::column![
-                widget::row!(prompt) ] ).into();
-    
+        return container(
+            widget::column![
+                    widget::row!(prompt),
+                    widget::row!(iced::widget::button("Enter").on_press(Message::Prompt(self.prompt.clone()))),
+                    widget::row!(iced::widget::text(format!("Response: {}", self.response.clone())))
+                ] 
+            ).into();
     }
 }
