@@ -1,3 +1,5 @@
+use std::process::Command;
+
 use iced::{Element, Size, Subscription, Theme};
 use ollama_rs::models::ModelOptions;
 use ollama_rs::Ollama;
@@ -23,6 +25,7 @@ struct Program {
 impl Program {  
     fn prompt(prompt: String) -> impl std::future::Future<Output = Result<String, Box<dyn std::error::Error>>> + Send { 
         async move {
+            println!("Received prompt: {}", prompt);
             let ollama = Ollama::default();
             let request = GenerationRequest::new(String::from("deepseek-r1:1.5b"), prompt)
                 .options(ModelOptions::default())
@@ -31,23 +34,32 @@ impl Program {
             let data = response.response;
             let re = Regex::new(r"(?s)<think>.*?</think>").unwrap();
             let cleaned_response = re.replace_all(&data, "").trim().to_string();
+            println!("Generated response: {} (Clean) \n {} (Unclean)", cleaned_response, data);
             Ok(cleaned_response)
         }
     }
 
-    fn update(&mut self, message: Message) {
+    fn update(&mut self, message: Message)  {
         match message { 
             Message::Response(response) => { 
                 self.response = response;
             }
 
             Message::Prompt(prompt) => {
+                println!("Prompt: {}", prompt);
                 let runtime_handle = self.runtime.handle().clone();
+                let (response_sender, response_receiver) = std::sync::mpsc::channel();
                 runtime_handle.spawn(async move {
-                    if let Ok(response) = Self::prompt(prompt).await {
-                        self.response = response;
+                    println!("Prompt: {}", prompt);
+                    if let Ok(response) = Program::prompt(prompt).await {
+                        println!("Response: {}", response);
+                        let _ = response_sender.send(response);
                     }
                 });
+                if let Ok(response) = response_receiver.recv() {
+                    println!("{}", response);
+                    self.response = response;
+                }
             }
                 //     .options(ModelOptions::default())
                 //     .system("You are a helpful AI assistant who has a strong devotion to the truth.\nYou are in a school environment, and you are to adhere to certain policies related to this. Begin talking now.");
