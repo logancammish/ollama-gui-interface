@@ -14,6 +14,8 @@ use iced_native::subscription::Recipe;
 use futures::stream::StreamExt;
 use webbrowser;
 use lazy_static::lazy_static;
+use rand::prelude::*;
+use serde_json;
 
 mod gui; 
 
@@ -42,15 +44,19 @@ enum Message {
 
 struct Program { 
     prompt: String,
+    prompt_time_sent: std::time::Instant,
     runtime: Runtime,
     response: Arc<Mutex<String>>,
     parsed_markdown: Vec<markdown::Item>,
     markdown_receiver: crossbeam_channel::Receiver<Vec<markdown::Item>>,
     is_processing: bool,
+    ollama_state: Arc<Mutex<String>>,
 }
 
 impl Program {  
 fn prompt(&mut self, prompt: String) {
+    self.prompt_time_sent = std::time::Instant::now();
+
     let (markdown_sender, markdown_receiver) = crossbeam_channel::unbounded();
     self.markdown_receiver = markdown_receiver;
     let runtime_handle = self.runtime.handle().clone();
@@ -97,8 +103,9 @@ fn prompt(&mut self, prompt: String) {
             let mut response = match ollama.generate_stream(request).await {
                 Ok(stream) => stream,
                 Err(e) => {
-                    eprintln!("Error generating response: {}", e);
-                    return;
+                    eprintln!("Error generating response: {}", e);            
+                    CHANNEL.0.send(false).unwrap();
+                    return 
                 }
             };
 
@@ -127,22 +134,22 @@ fn prompt(&mut self, prompt: String) {
 
 
 
-     //let re = Regex::new(r"(?s)<think>.*?</think>").unwrap();
-            // let cleaned_response = re.replace_all(&data, "").trim().to_string();
-            // println!("Generated response: {} (Clean) \n {} (Unclean)", cleaned_response, data);
-            
-            // let runtime_handle = self.runtime.handle().clone();
-            // let (response_sender, response_receiver) = std::sync::mpsc::channel();
-            // runtime_handle.spawn(async move {
-            //     //if let Ok(response) = cleaned_response {
-            //         let _ = response_sender.send(response);
-            //     //}
-            // });
-            // if let Ok(response) = response_receiver.recv() {
-            //     println!("{}", response);
-            //     self.response = response;
-            // }
-            // self.parsed_markdown = markdown::parse(&self.response).collect();
+    //let re = Regex::new(r"(?s)<think>.*?</think>").unwrap();
+    // let cleaned_response = re.replace_all(&data, "").trim().to_string();
+    // println!("Generated response: {} (Clean) \n {} (Unclean)", cleaned_response, data);
+    
+    // let runtime_handle = self.runtime.handle().clone();
+    // let (response_sender, response_receiver) = std::sync::mpsc::channel();
+    // runtime_handle.spawn(async move {
+    //     //if let Ok(response) = cleaned_response {
+    //         let _ = response_sender.send(response);
+    //     //}
+    // });
+    // if let Ok(response) = response_receiver.recv() {
+    //     println!("{}", response);
+    //     self.response = response;
+    // }
+    // self.parsed_markdown = markdown::parse(&self.response).collect();
     
     
 
@@ -152,6 +159,39 @@ fn prompt(&mut self, prompt: String) {
                 Task::none()
             }
             Message::Tick => { 
+                let mut rng = rand::thread_rng();
+                if rng.gen_range(0..5000) == 0 {
+                    let runtime_handle = self.runtime.handle().clone();
+                    let ollama_state = Arc::clone(&self.ollama_state);
+                    
+                    runtime_handle.spawn(async move {
+                        match reqwest::get("http://127.0.0.1:11434/api/version").await {
+                            Ok(response) => {
+                                if response.status().is_success() {
+                                     match response.json::<serde_json::Value>().await {
+                                        Ok(json) => {
+                                            if let Some(version) = json.get("version").and_then(|v| v.as_str()) {
+                                                *ollama_state.lock().unwrap() = format!("Online (v{})", version);
+                                            } else {
+                                                *ollama_state.lock().unwrap() = "Online (unknown version)".to_string();
+                                            }
+                                        }
+                                        Err(_) => {
+                                            *ollama_state.lock().unwrap() = "Online (version parse error)".to_string();
+                                        }
+                                    }
+                                } else {
+                                    *ollama_state.lock().unwrap() = "Offline".to_string();
+                                }
+                            }
+                            Err(err) => {
+                                println!("Failed to reach API: {}", err);
+                                *ollama_state.lock().unwrap() = "Offline".to_string();
+                            }
+                        }
+                    });
+                }
+
                 if let Ok(md) = self.markdown_receiver.try_recv() {
                     self.parsed_markdown = md;
                 }
@@ -260,7 +300,9 @@ impl Default for Program {
             response: Arc::new(Mutex::new(String::from(""))),
             parsed_markdown: vec![], 
             markdown_receiver: crossbeam_channel::unbounded().1,
-            is_processing: false
+            is_processing: false,
+            prompt_time_sent: std::time::Instant::now(),
+            ollama_state: Arc::new(Mutex::new("Offline".to_string())),
         }
     }
 }

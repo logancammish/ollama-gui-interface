@@ -44,9 +44,15 @@ impl Program {
                         widget::row!(iced::widget::button("Enter").on_press(Message::Prompt(self.prompt.clone()))),
                     ).align_x(alignment::Horizontal::Right),
                     // Installation
-                    container( 
-                        widget::button("Installation")
+                    widget::row!( 
+                        widget::text("To install the model, click "),
+                        widget::button("here.")
                         .on_press(Message::InstallationPrompt)
+                        
+                    ),
+                    // Show if ollama is detected as online
+                    container( 
+                        widget::text(format!("Ollama is {}.", self.ollama_state.lock().unwrap().clone()))
                     )
                     
                 ]
