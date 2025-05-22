@@ -14,7 +14,6 @@ use iced_native::subscription::Recipe;
 use futures::stream::StreamExt;
 use webbrowser;
 use lazy_static::lazy_static;
-use rand::prelude::*;
 use serde_json;
 
 mod gui; 
@@ -40,6 +39,7 @@ enum Message {
     Tick,
     CopyPressed(String),
     InstallationPrompt,
+    ModelChange(String)
 } 
 
 struct Program { 
@@ -51,34 +51,44 @@ struct Program {
     markdown_receiver: crossbeam_channel::Receiver<Vec<markdown::Item>>,
     is_processing: bool,
     ollama_state: Arc<Mutex<String>>,
+    current_tick: i32,
+    bots_list: Arc<Mutex<Vec<String>>>,
+    model: Option<String>
 }
 
 impl Program {  
-fn prompt(&mut self, prompt: String) {
-    self.prompt_time_sent = std::time::Instant::now();
-
-    let (markdown_sender, markdown_receiver) = crossbeam_channel::unbounded();
-    self.markdown_receiver = markdown_receiver;
-    let runtime_handle = self.runtime.handle().clone();
-    let response_arc = Arc::clone(&self.response);
-    let (tx, rx) = std::sync::mpsc::channel::<GenerationResponse>();
-
-    std::thread::spawn(move || {
-        for token in rx {
-            let mut resp = response_arc.lock().unwrap();
-            resp.push_str(&token.response);
-            let md = markdown::parse(&resp).collect();
-            markdown_sender.send(md).unwrap();
+    fn prompt(&mut self, prompt: String) {
+        if self.model == None {
+            CHANNEL.0.send(false).unwrap();
+            println!("model is None"); 
+            return; 
         }
-    });
 
+        self.prompt_time_sent = std::time::Instant::now();
 
-    runtime_handle.spawn(async move {
-        println!("Received prompt: {}", prompt);
-        let ollama = Ollama::default();
-        let request = GenerationRequest::new("llama3.2:3b".to_string(), prompt)
-            .options(ModelOptions::default().temperature(0.6))
-            .system("
+        let (markdown_sender, markdown_receiver) = crossbeam_channel::unbounded();
+        self.markdown_receiver = markdown_receiver;
+        let runtime_handle = self.runtime.handle().clone();
+        let response_arc = Arc::clone(&self.response);
+        let (tx, rx) = std::sync::mpsc::channel::<GenerationResponse>();
+
+        std::thread::spawn(move || {
+            for token in rx {
+                let mut resp = response_arc.lock().unwrap();
+                resp.push_str(&token.response);
+                let md = markdown::parse(&resp).collect();
+                markdown_sender.send(md).unwrap();
+            }
+        });
+
+        let model = self.model.clone();
+
+        runtime_handle.spawn(async move {
+            println!("Received prompt: {}", prompt);
+            let ollama = Ollama::default();
+            let request = GenerationRequest::new(model.unwrap(), prompt)
+                .options(ModelOptions::default().temperature(0.6))
+                .system("
                 You are a helpful AI assistant with a strong commitment to the truth.\n
                 You are operating in a high school environment and must always behave appropriately and respectfully.\n
                 You must adhere strictly to school rules, academic integrity policies, and community guidelines.\n
@@ -127,9 +137,6 @@ fn prompt(&mut self, prompt: String) {
             }
             CHANNEL.0.send(false).unwrap();
         });
-            
-        
-
     }
 
 
@@ -151,7 +158,6 @@ fn prompt(&mut self, prompt: String) {
     // }
     // self.parsed_markdown = markdown::parse(&self.response).collect();
     
-    
 
     fn update(&mut self, message: Message) -> Task<Message>  {
         match message { 
@@ -159,9 +165,14 @@ fn prompt(&mut self, prompt: String) {
                 Task::none()
             }
             Message::Tick => { 
-                let mut rng = rand::thread_rng();
-                if rng.gen_range(0..5000) == 0 {
-                    let runtime_handle = self.runtime.handle().clone();
+                let runtime_handle = self.runtime.handle().clone();
+
+                if self.current_tick > 10000 {
+                    self.current_tick = 0;
+                }
+                self.current_tick += 1; 
+
+                if (self.current_tick == 0) || (self.current_tick == 5000) {
                     let ollama_state = Arc::clone(&self.ollama_state);
                     
                     runtime_handle.spawn(async move {
@@ -190,6 +201,42 @@ fn prompt(&mut self, prompt: String) {
                             }
                         }
                     });
+                } else if self.current_tick == 1000 {               
+                    let bots_list = Arc::clone(&self.bots_list);
+
+                    runtime_handle.spawn(async move {
+                        match reqwest::get("http://127.0.0.1:11434/api/tags").await {
+                            Ok(response) => {
+                                if response.status().is_success() {
+                                     match response.json::<serde_json::Value>().await {
+                                        Ok(json) => {
+                                             if let Some(bots) = json.get("models").and_then(|v| v.as_array()) {
+                                                for bot in bots {
+                                                    if let Some(name) = bot.get("name").and_then(|v| v.as_str()) {
+                                                        if !(bots_list.lock().unwrap().contains(&name.to_string())) {
+                                                            println!("Found bot: {}", name);
+                                                            bots_list.lock().unwrap().push(name.to_string());
+                                                        }
+                                                    }
+                                                }
+                                            } else {
+                                                *bots_list.lock().unwrap() = vec![];
+                                            }
+                                        }
+                                        Err(_) => {
+                                            *bots_list.lock().unwrap() = vec![];
+                                        }
+                                    }
+                                } else {
+                                   *bots_list.lock().unwrap() = vec![];
+                                }
+                            }
+                            Err(err) => {
+                                println!("Failed to reach API: {}", err);
+                                *bots_list.lock().unwrap() = vec![];
+                            }
+                        }
+                    });
                 }
 
                 if let Ok(md) = self.markdown_receiver.try_recv() {
@@ -199,6 +246,11 @@ fn prompt(&mut self, prompt: String) {
                     self.is_processing = is_processing;
                 }
 
+                Task::none()
+            }
+
+            Message::ModelChange(model) => {
+                self.model = Some(model);
                 Task::none()
             }
             
@@ -303,6 +355,9 @@ impl Default for Program {
             is_processing: false,
             prompt_time_sent: std::time::Instant::now(),
             ollama_state: Arc::new(Mutex::new("Offline".to_string())),
+            current_tick: 0,
+            bots_list: Arc::new(Mutex::new(vec![])),
+            model: None
         }
     }
 }

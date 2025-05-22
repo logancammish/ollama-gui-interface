@@ -2656,7 +2656,6 @@ dependencies = [
  "iced_widget",
  "lazy_static",
  "ollama-rs",
- "rand",
  "regex",
  "reqwest",
  "serde_json",

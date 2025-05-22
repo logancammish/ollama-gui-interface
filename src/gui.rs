@@ -9,6 +9,8 @@ use crate::{Program, Message};
 impl Program {
     
     pub fn get_ui_information(&self) -> iced::widget::Container<Message> { 
+        let bots_list = self.bots_list.lock().unwrap().clone();
+
        // let parsed_markdown = self.parsed_markdown.clone(); // Arc<Mutex<_>>
         let prompt = iced::widget::TextInput::<Message>::new(
             "Prompt",
@@ -53,6 +55,12 @@ impl Program {
                     // Show if ollama is detected as online
                     container( 
                         widget::text(format!("Ollama is {}.", self.ollama_state.lock().unwrap().clone()))
+                    ),
+
+                    widget::pick_list(
+                        bots_list,
+                        self.model.clone(),
+                        Message::ModelChange,
                     )
                     
                 ]
