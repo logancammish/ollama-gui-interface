@@ -26,6 +26,14 @@ lazy_static! {
         let (txprocess, rxprocess) = std::sync::mpsc::channel::<bool>();
         return (txprocess, Arc::new(Mutex::new(rxprocess)));
     };
+
+    static ref DEBUG_CHANNEL: (
+        std::sync::mpsc::Sender<String>,
+        Arc<Mutex<std::sync::mpsc::Receiver<String>>>
+    ) = {
+        let (txprocess, rxprocess) = std::sync::mpsc::channel::<String>();
+        return (txprocess, Arc::new(Mutex::new(rxprocess)));
+    };
 }
 
 
@@ -39,7 +47,9 @@ enum Message {
     Tick,
     CopyPressed(String),
     InstallationPrompt,
-    ModelChange(String)
+    ModelChange(String),
+    InstallModel(String),
+    UpdateInstall(String)
 } 
 
 struct Program { 
@@ -53,7 +63,9 @@ struct Program {
     ollama_state: Arc<Mutex<String>>,
     current_tick: i32,
     bots_list: Arc<Mutex<Vec<String>>>,
-    model: Option<String>
+    model: Option<String>,
+    installing_model: String,
+    debug_message: String,
 }
 
 impl Program {  
@@ -89,6 +101,7 @@ impl Program {
             let request = GenerationRequest::new(model.unwrap(), prompt)
                 .options(ModelOptions::default().temperature(0.6))
                 .system("
+                The application you are currently operating under is called 'Ollama interface' by Logan Cammish, developed in the Rust programming language.\n
                 You are a helpful AI assistant with a strong commitment to the truth.\n
                 You are operating in a high school environment and must always behave appropriately and respectfully.\n
                 You must adhere strictly to school rules, academic integrity policies, and community guidelines.\n
@@ -174,7 +187,6 @@ impl Program {
 
                 if (self.current_tick == 0) || (self.current_tick == 5000) {
                     let ollama_state = Arc::clone(&self.ollama_state);
-                    
                     runtime_handle.spawn(async move {
                         match reqwest::get("http://127.0.0.1:11434/api/version").await {
                             Ok(response) => {
@@ -245,8 +257,31 @@ impl Program {
                 if let Ok(is_processing) = CHANNEL.1.lock().unwrap().try_recv() {
                     self.is_processing = is_processing;
                 }
+                if let Ok(debug_msg) = DEBUG_CHANNEL.1.lock().unwrap().try_recv() {
+                    self.debug_message = debug_msg;
+                }
 
                 Task::none()
+            }
+
+            Message::InstallModel(model_install) => {
+                let runtime_handle = self.runtime.handle().clone();
+                let ollama = Ollama::default();
+                
+
+                runtime_handle.spawn(async move {
+                    match ollama.pull_model(model_install.clone(), false).await {
+                        Ok(outcome) => {
+                            println!("Model {} installed successfully: {}", model_install, outcome.message);     
+                            DEBUG_CHANNEL.0.send(format!("Installed model {}: {}", model_install, outcome.message)).unwrap();
+                        }  
+                        Err(outcome) => {
+                            println!("Failed to install model {}: {:?}", model_install, outcome);
+                            DEBUG_CHANNEL.0.send(format!("Failed to install model {}", model_install)).unwrap();
+                        }
+                    };
+                });
+                return Task::none();
             }
 
             Message::ModelChange(model) => {
@@ -299,6 +334,10 @@ impl Program {
 
             Message::UpdatePrompt(prompt) => {
                 self.prompt = prompt;
+                Task::none()
+            }
+            Message::UpdateInstall(model) => {
+                self.installing_model = model;
                 Task::none()
             }
         }
@@ -357,7 +396,9 @@ impl Default for Program {
             ollama_state: Arc::new(Mutex::new("Offline".to_string())),
             current_tick: 0,
             bots_list: Arc::new(Mutex::new(vec![])),
-            model: None
+            model: None,
+            installing_model: String::new(),
+            debug_message: String::new(),
         }
     }
 }
