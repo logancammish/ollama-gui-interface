@@ -1,3 +1,4 @@
+#![windows_subsystem = "windows"]
 //std crate imports
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
@@ -82,7 +83,8 @@ impl Program {
         // invalid case handler
         if self.model == None {
             CHANNEL.0.send(false).unwrap();
-            println!("model is None"); 
+            DEBUG_CHANNEL.0.send("Model selected is invalid, have you selected a model?".to_string()).unwrap();
+            println!("Model is None");
             return; 
         }
 
