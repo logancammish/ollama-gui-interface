@@ -1,7 +1,8 @@
+//std crate imports
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Poll, Context};
-
+//external crate imports
 use futures::Stream;
 use iced::{ clipboard, keyboard, Element, Size, Subscription, Task, Theme};
 use iced_widget::markdown;
@@ -15,9 +16,12 @@ use futures::stream::StreamExt;
 use webbrowser;
 use lazy_static::lazy_static;
 use serde_json;
-
+//local file imports
 mod gui; 
 
+// define lazy_static mpsc channels which will
+// allow for interaction between threads and runtimes
+// only for main.rs file
 lazy_static! {
     static ref CHANNEL: (
         std::sync::mpsc::Sender<bool>,
@@ -36,7 +40,7 @@ lazy_static! {
     };
 }
 
-
+// message enum defined to send communications to the GUI logic
 #[derive(Debug, Clone)]
 enum Message {
     Prompt(String),
@@ -52,6 +56,8 @@ enum Message {
     UpdateInstall(String)
 } 
 
+// program struct, stores the current program state
+// e.g., the current prompt, debug message, etc.
 struct Program { 
     prompt: String,
     prompt_time_sent: std::time::Instant,
@@ -68,8 +74,12 @@ struct Program {
     debug_message: String,
 }
 
+// impliment the program function with several functions
+// to allow the program to function
+// e.g. view() is for gui logic
 impl Program {  
     fn prompt(&mut self, prompt: String) {
+        // invalid case handler
         if self.model == None {
             CHANNEL.0.send(false).unwrap();
             println!("model is None"); 
@@ -84,6 +94,7 @@ impl Program {
         let response_arc = Arc::clone(&self.response);
         let (tx, rx) = std::sync::mpsc::channel::<GenerationResponse>();
 
+        // create a new thread to prevent blocking
         std::thread::spawn(move || {
             for token in rx {
                 let mut resp = response_arc.lock().unwrap();
@@ -94,7 +105,10 @@ impl Program {
         });
 
         let model = self.model.clone();
-
+        
+        // create a new tokio runtime
+        // this is done because the function is not async
+        // but async programming must be done for the REST API calls
         runtime_handle.spawn(async move {
             println!("Received prompt: {}", prompt);
             let ollama = Ollama::default();
@@ -132,6 +146,7 @@ impl Program {
                 }
             };
 
+            // iterate through responses and send them to the mpsc channel
             while let Some(data) = response.next().await {
                 match data {
                     Ok(responses) => {
@@ -148,35 +163,22 @@ impl Program {
                     }
                 }
             }
+            // tells the is_processing channel to set the variable to false
             CHANNEL.0.send(false).unwrap();
         });
     }
-
-
-
-    //let re = Regex::new(r"(?s)<think>.*?</think>").unwrap();
-    // let cleaned_response = re.replace_all(&data, "").trim().to_string();
-    // println!("Generated response: {} (Clean) \n {} (Unclean)", cleaned_response, data);
-    
-    // let runtime_handle = self.runtime.handle().clone();
-    // let (response_sender, response_receiver) = std::sync::mpsc::channel();
-    // runtime_handle.spawn(async move {
-    //     //if let Ok(response) = cleaned_response {
-    //         let _ = response_sender.send(response);
-    //     //}
-    // });
-    // if let Ok(response) = response_receiver.recv() {
-    //     println!("{}", response);
-    //     self.response = response;
-    // }
-    // self.parsed_markdown = markdown::parse(&self.response).collect();
-    
 
     fn update(&mut self, message: Message) -> Task<Message>  {
         match message { 
             Message::None => {
                 Task::none()
             }
+
+            // is activated once every millisecond
+            // this will:
+            // - check whether Ollama is online
+            // - check the currently installed bots
+            // - handle mpsc channels
             Message::Tick => { 
                 let runtime_handle = self.runtime.handle().clone();
 
@@ -347,6 +349,7 @@ impl Program {
         Self::get_ui_information(self).into()
     }
 
+    // sets up the Tick and keypressed events
     fn subscription(&self) -> Subscription<Message> {
         struct Timer;
         impl<H: std::hash::Hasher, E> Recipe<H, E> for Timer {            
@@ -385,6 +388,7 @@ impl Program {
 
 impl Default for Program {
     fn default() -> Self {
+        // default values for Program 
         Self { 
             prompt: String::new(),
             runtime: Runtime::new().expect("Failed to create Tokio runtime"), 
@@ -409,7 +413,7 @@ pub async fn main() -> iced::Result {
         ..iced::window::Settings::default()
     };
 
-
+    // begins the application
     iced::application("ollama interface", Program::update, Program::view)
         .window_size(Size::new(700.0, 720.0))
         .subscription(Program::subscription)

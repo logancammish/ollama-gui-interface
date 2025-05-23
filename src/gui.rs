@@ -1,6 +1,4 @@
-use std::sync::Arc;
-
-use iced::{alignment, clipboard, widget::{self, container}, Alignment, Length, Theme};
+use iced::{alignment, widget::{self, container}, Length, Theme};
 use iced_widget::{markdown, Space};
 
 use crate::{Program, Message};
@@ -26,7 +24,7 @@ impl Program {
             &self.installing_model,
         )
             .padding(10)
-            .size(20)
+            .size(7)
             .width(iced::Length::Fixed(270.0))
             .on_submit(Message::InstallModel(self.installing_model.clone()))
             .on_input(|input| { Message::UpdateInstall(input) });
@@ -86,6 +84,6 @@ impl Program {
 
                     
                 ]
-            ).into();
+            ).padding(10).into();
     }
 }
