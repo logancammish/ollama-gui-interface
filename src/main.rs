@@ -1,6 +1,6 @@
-use std::collections::HashMap;
 //#![windows_subsystem = "windows"]
 //std crate imports
+use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Poll, Context};
@@ -258,6 +258,8 @@ impl Program {
             }
 
             Message::InstallModel(model_install) => {
+                DEBUG_CHANNEL.0.send(format!("Installing model... {}", model_install).to_string()).unwrap();
+
                 let runtime_handle = self.runtime.handle().clone();
                 let ollama = Ollama::default();
                 

@@ -1,6 +1,5 @@
 # ollama-gui-interface
 A GUI interface for Ollama bots written in Rust
-> Note: This interfaces is intended for comparing local models, not simply for using them. If you wish for a version that does this functionality, use the older v0.1.2: https://github.com/logancammish/ollama-gui-interface/releases/tag/0.1.2
 
 ## Streamlined installation
 
