@@ -1,0 +1,12 @@
+{
+    "prompts": [
+        {
+            "name": "Default Prompt",
+            "content": "This is a default prompt. You can modify it as needed."
+        },
+        {
+            "name": "Advanced Prompt",
+            "content": "This is an advanced prompt. It includes multiple steps and detailed instructions."
+        }
+    ]
+}

@@ -17,6 +17,8 @@ use futures::stream::StreamExt;
 use webbrowser;
 use lazy_static::lazy_static;
 use serde_json;
+use serde::Deserialize;
+use std::fs;
 //local file imports
 mod gui; 
 
@@ -39,6 +41,12 @@ lazy_static! {
         let (txprocess, rxprocess) = std::sync::mpsc::channel::<String>();
         return (txprocess, Arc::new(Mutex::new(rxprocess)));
     };
+}
+
+#[derive(Debug, Deserialize)]
+struct Prompt { 
+    name: String, 
+    content: String
 }
 
 // message enum defined to send communications to the GUI logic
@@ -191,6 +199,7 @@ impl Program {
 
                 if (self.current_tick == 0) || (self.current_tick == 5000) {
                     let ollama_state = Arc::clone(&self.ollama_state);
+
                     runtime_handle.spawn(async move {
                         match reqwest::get("http://127.0.0.1:11434/api/version").await {
                             Ok(response) => {
@@ -217,39 +226,23 @@ impl Program {
                             }
                         }
                     });
-                } else if self.current_tick == 1000 {               
+                } else if self.current_tick == 1000 {      
+                    let ollama = Ollama::default();
                     let bots_list = Arc::clone(&self.bots_list);
 
                     runtime_handle.spawn(async move {
-                        match reqwest::get("http://127.0.0.1:11434/api/tags").await {
-                            Ok(response) => {
-                                if response.status().is_success() {
-                                     match response.json::<serde_json::Value>().await {
-                                        Ok(json) => {
-                                             if let Some(bots) = json.get("models").and_then(|v| v.as_array()) {
-                                                for bot in bots {
-                                                    if let Some(name) = bot.get("name").and_then(|v| v.as_str()) {
-                                                        if !(bots_list.lock().unwrap().contains(&name.to_string())) {
-                                                            println!("Found bot: {}", name);
-                                                            bots_list.lock().unwrap().push(name.to_string());
-                                                        }
-                                                    }
-                                                }
-                                            } else {
-                                                *bots_list.lock().unwrap() = vec![];
-                                            }
-                                        }
-                                        Err(_) => {
-                                            *bots_list.lock().unwrap() = vec![];
-                                        }
+                        match ollama.list_local_models().await {
+                            Ok(bots) => {
+                                bots.iter().for_each(|bot| {
+                                    if !(bots_list.lock().unwrap().contains(&bot.name.to_string())) {
+                                        println!("Found bot: {}", bot.name);
+                                        bots_list.lock().unwrap().push(bot.name.to_string());
                                     }
-                                } else {
-                                   *bots_list.lock().unwrap() = vec![];
-                                }
+                                });
                             }
-                            Err(err) => {
-                                println!("Failed to reach API: {}", err);
-                                *bots_list.lock().unwrap() = vec![];
+                            Err(e) => {
+                                DEBUG_CHANNEL.0.send("Error occured during tick 1000, while listing bots".to_string());
+                                println!("Error: tick 1000 {:?}", e);
                             }
                         }
                     });

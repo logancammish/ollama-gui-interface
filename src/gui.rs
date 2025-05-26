@@ -5,7 +5,6 @@ use crate::{Program, Message};
 
 
 impl Program {
-    
     pub fn get_ui_information(&self) -> iced::widget::Container<Message> { 
         let bots_list = self.bots_list.lock().unwrap().clone();
 
