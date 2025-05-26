@@ -7,6 +7,7 @@ use crate::{Program, Message};
 impl Program {
     pub fn get_ui_information(&self) -> iced::widget::Container<Message> { 
         let bots_list = self.bots_list.lock().unwrap().clone();
+        let prompts_list = self.system_prompts.lock().unwrap().clone();
 
        // let parsed_markdown = self.parsed_markdown.clone(); // Arc<Mutex<_>>
         let prompt = iced::widget::TextInput::<Message>::new(
@@ -38,7 +39,7 @@ impl Program {
                             markdown::Settings::default(),
                             markdown::Style::from_palette(Theme::Dracula.palette())
                         ).map(|_| Message::None)
-                    ).height(Length::Fixed(420.0)),
+                    ).height(Length::Fixed(320.0)),
                     // Copy button
                     widget::row!(
                         widget::button("Copy")
@@ -66,12 +67,22 @@ impl Program {
                     container( 
                         widget::text(format!("Ollama is {}.", self.ollama_state.lock().unwrap().clone()))
                     ),
+                    // Choose bot
                     Space::with_height(Length::Fixed(10.0)),
+                    widget::text("Select model:"),
                     widget::pick_list(
                         bots_list,
                         self.model.clone(),
                         Message::ModelChange,
                     ),
+                    // Choose sys prompt 
+                    Space::with_height(Length::Fixed(10.0)),
+                    widget::text("Select system prompt:"),
+                    widget::pick_list(
+                        prompts_list,
+                        self.system_prompt.clone(),
+                        Message::SystemPromptChange,
+                    ), 
                     Space::with_height(Length::Fixed(10.0)),
                     // Install model 
                     widget::row!(

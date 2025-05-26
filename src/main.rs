@@ -1,4 +1,5 @@
-#![windows_subsystem = "windows"]
+use std::collections::HashMap;
+//#![windows_subsystem = "windows"]
 //std crate imports
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
@@ -17,7 +18,6 @@ use futures::stream::StreamExt;
 use webbrowser;
 use lazy_static::lazy_static;
 use serde_json;
-use serde::Deserialize;
 use std::fs;
 //local file imports
 mod gui; 
@@ -43,15 +43,10 @@ lazy_static! {
     };
 }
 
-#[derive(Debug, Deserialize)]
-struct Prompt { 
-    name: String, 
-    content: String
-}
-
 // message enum defined to send communications to the GUI logic
 #[derive(Debug, Clone)]
 enum Message {
+    SystemPromptChange(String),
     Prompt(String),
     UpdatePrompt(String),
     None,
@@ -68,6 +63,9 @@ enum Message {
 // program struct, stores the current program state
 // e.g., the current prompt, debug message, etc.
 struct Program { 
+    system_prompts_as_prompt: HashMap<String, String>,
+    system_prompts: Arc<Mutex<Vec<String>>>,
+    system_prompt: Option<String>,
     prompt: String,
     prompt_time_sent: std::time::Instant,
     runtime: Runtime,
@@ -114,7 +112,18 @@ impl Program {
             }
         });
 
+        let system_prompt: String;
+
         let model = self.model.clone();
+        if self.system_prompts_as_prompt.get(&self.system_prompt.clone().unwrap()).is_some() {
+            system_prompt = self.system_prompts_as_prompt.get(&self.system_prompt.clone().unwrap())
+                .expect("System prompt not found")
+                .to_string();
+        } else { 
+            println!("system prompt is None");
+            DEBUG_CHANNEL.0.send("System prompt not selected or is invalid".to_string()).unwrap();
+            system_prompt = "".to_string();
+        }
         
         // create a new tokio runtime
         // this is done because the function is not async
@@ -124,28 +133,9 @@ impl Program {
             let ollama = Ollama::default();
             let request = GenerationRequest::new(model.unwrap(), prompt)
                 .options(ModelOptions::default().temperature(0.6))
-                .system("
-                The application you are currently operating under is called 'Ollama interface' by Logan Cammish, developed in the Rust programming language.\n
-                You are a helpful AI assistant with a strong commitment to the truth.\n
-                You are operating in a high school environment and must always behave appropriately and respectfully.\n
-                You must adhere strictly to school rules, academic integrity policies, and community guidelines.\n
-                You should not generate or assist with inappropriate, harmful, or disrespectful content of any kind.\n
-                You must not help students cheat, plagiarize, or bypass school rules.\n
-                When asked to generate code, you should include it in clearly marked markdown code blocks.\n
-                You are able to use markdown formatting for structure, clarity, and presentation.\n
-                You should always be clear, supportive, and age-appropriate in your responses.\n
-                Begin responding in a helpful, honest, and respectful manner.\n
-                You cannot discuss discriminatory or hateful content, or any illegal activities.\n
-                You cannot discuss or promote any form of violence, self-harm, or substance abuse.\n
-                You cannot discuss or promote any form of harassment, bullying, or intimidation.\n
-                You cannot discuss or promote any form of sexual content, adult material, or nudity. \n 
-                If you are asked to discuss a historical person, you must provide accurate and respectful information. \n
-                You cannot discuss or promote any form of misinformation, conspiracy theories, or pseudoscience.\n
-                If you are asked to discuss anything against your guidelines, you are to say 'No, I cannot do that.'\n
-                You can communicate in multiple languages, but you must maintain these policies.\n
-                If someone messages you in a different language, you must respond in that language.\n
-            ")
-            ;
+                .system(system_prompt.clone());
+            
+            println!("System prompt: {}", system_prompt);
 
             let mut response = match ollama.generate_stream(request).await {
                 Ok(stream) => stream,
@@ -241,7 +231,8 @@ impl Program {
                                 });
                             }
                             Err(e) => {
-                                DEBUG_CHANNEL.0.send("Error occured during tick 1000, while listing bots".to_string());
+                                DEBUG_CHANNEL.0.send("Error occured during tick 1000, while listing bots".to_string())
+                                    .expect("Error occured sending information to debugchannel tick1000");
                                 println!("Error: tick 1000 {:?}", e);
                             }
                         }
@@ -258,6 +249,11 @@ impl Program {
                     self.debug_message = debug_msg;
                 }
 
+                Task::none()
+            }
+
+            Message::SystemPromptChange(system_prompt) => {
+                self.system_prompt = Some(system_prompt);
                 Task::none()
             }
 
@@ -383,8 +379,23 @@ impl Program {
 
 impl Default for Program {
     fn default() -> Self {
+        let data = fs::read_to_string("defaultprompts.json")
+            .expect("Unable to read file");
+        let system_prompts_as_prompt: HashMap<String, String> = serde_json::from_str(&data)
+            .expect("JSON was not well-formatted");
+        let mut system_prompts: Vec<String> = Vec::new();
+
+        system_prompts_as_prompt.iter().for_each(|prompt| {
+            system_prompts.push(prompt.0.clone());
+        });
+
+        println!("Loaded system prompts:\n{:?} ", system_prompts);
+
         // default values for Program 
         Self { 
+            system_prompts_as_prompt: system_prompts_as_prompt, 
+            system_prompts: Arc::new(Mutex::new(system_prompts)), 
+            system_prompt: Some(String::new()),
             prompt: String::new(),
             runtime: Runtime::new().expect("Failed to create Tokio runtime"), 
             response: Arc::new(Mutex::new(String::from(""))),
