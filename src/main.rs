@@ -122,7 +122,7 @@ impl Program {
         } else { 
             println!("system prompt is None");
             DEBUG_CHANNEL.0.send("System prompt not selected or is invalid".to_string()).unwrap();
-            system_prompt = "".to_string();
+            return; 
         }
         
         // create a new tokio runtime
@@ -182,7 +182,7 @@ impl Program {
             Message::Tick => { 
                 let runtime_handle = self.runtime.handle().clone();
 
-                if self.current_tick > 10000 {
+                if self.current_tick > 20000 {
                     self.current_tick = 0;
                 }
                 self.current_tick += 1; 
