@@ -19,6 +19,7 @@ use webbrowser;
 use lazy_static::lazy_static;
 use serde_json;
 use std::fs;
+use rustrict::Censor;
 //local file imports
 mod gui; 
 
@@ -152,7 +153,12 @@ impl Program {
                     Ok(responses) => {
                         for token in responses {
                             print!("{}", token.response);
-                            if tx.send(token).is_err() {
+                            let filtered_token = GenerationResponse{ 
+                                response: Censor::from_str(token.response.as_str()).censor(),
+                                ..token
+                            };
+                            
+                            if tx.send(filtered_token).is_err() {
                                 break;
                             }
                         }
