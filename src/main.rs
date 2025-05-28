@@ -1,4 +1,4 @@
-//#![windows_subsystem = "windows"]
+#![windows_subsystem = "windows"]
 //std crate imports
 use std::collections::HashMap;
 use std::pin::Pin;
@@ -67,6 +67,7 @@ struct Program {
     system_prompts_as_prompt: HashMap<String, String>,
     system_prompts: Arc<Mutex<Vec<String>>>,
     system_prompt: Option<String>,
+    filtering: bool,
     prompt: String,
     prompt_time_sent: std::time::Instant,
     runtime: Runtime,
@@ -114,7 +115,6 @@ impl Program {
         });
 
         let system_prompt: String;
-
         let model = self.model.clone();
         if self.system_prompts_as_prompt.get(&self.system_prompt.clone().unwrap()).is_some() {
             system_prompt = self.system_prompts_as_prompt.get(&self.system_prompt.clone().unwrap())
@@ -126,6 +126,7 @@ impl Program {
             return; 
         }
         
+        let filtering: bool = self.filtering.clone();
         // create a new tokio runtime
         // this is done because the function is not async
         // but async programming must be done for the REST API calls
@@ -153,9 +154,13 @@ impl Program {
                     Ok(responses) => {
                         for token in responses {
                             print!("{}", token.response);
-                            let filtered_token = GenerationResponse{ 
-                                response: Censor::from_str(token.response.as_str()).censor(),
-                                ..token
+                            let filtered_token = if filtering {
+                                GenerationResponse{ 
+                                    response: Censor::from_str(token.response.as_str()).censor(),
+                                    ..token
+                                }
+                            } else {
+                                token
                             };
                             
                             if tx.send(filtered_token).is_err() {
@@ -387,9 +392,9 @@ impl Program {
 
 impl Default for Program {
     fn default() -> Self {
-        let data = fs::read_to_string("defaultprompts.json")
+        let data_prompts = fs::read_to_string("defaultprompts.json")
             .expect("Unable to read file");
-        let system_prompts_as_prompt: HashMap<String, String> = serde_json::from_str(&data)
+        let system_prompts_as_prompt: HashMap<String, String> = serde_json::from_str(&data_prompts)
             .expect("JSON was not well-formatted");
         let mut system_prompts: Vec<String> = Vec::new();
 
@@ -398,6 +403,16 @@ impl Default for Program {
         });
 
         println!("Loaded system prompts:\n{:?} ", system_prompts);
+
+        let settings = fs::read_to_string("settings.json")
+            .expect("Unable to read settings file");
+        let settings_hmap: HashMap<String, bool> = serde_json::from_str(&settings)
+            .expect("JSON was not well-formatted");
+        let filtering = *settings_hmap.get("filtering")
+            .unwrap_or(&true);
+
+
+        println!("Filtering is set to: {}", filtering);
 
         // default values for Program 
         Self { 
@@ -413,6 +428,7 @@ impl Default for Program {
             prompt_time_sent: std::time::Instant::now(),
             ollama_state: Arc::new(Mutex::new("Offline".to_string())),
             current_tick: 0,
+            filtering: filtering,
             bots_list: Arc::new(Mutex::new(vec![])),
             model: None,
             installing_model: String::new(),
