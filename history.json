@@ -1,0 +1,28 @@
+{
+  "information": [
+    {
+      "date": "2024-02-29",
+      "time": "12:00:00",
+      "version": "0.1.4",
+      "filtering": true
+    }
+  ],
+  "log" : [ 
+    [
+        {
+            "time": "2024-02-29|12:00:00",
+            "prompt": "X",
+            "response": "Y",
+            "model": "Z",
+            "systemprompt": "A"
+        },
+        {
+            "time": "2024-02-29|12:00:00",
+            "prompt": "X",
+            "response": "Y",
+            "model": "Z",
+            "systemprompt": "A"
+        }
+    ]
+  ]
+}

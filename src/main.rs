@@ -1,4 +1,4 @@
-#![windows_subsystem = "windows"]
+//#![windows_subsystem = "windows"]
 //std crate imports
 use std::collections::HashMap;
 use std::pin::Pin;
@@ -122,6 +122,7 @@ impl Program {
                 .to_string();
         } else { 
             println!("system prompt is None");
+            CHANNEL.0.send(false).unwrap();
             DEBUG_CHANNEL.0.send("System prompt not selected or is invalid".to_string()).unwrap();
             return; 
         }
