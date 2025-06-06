@@ -1,6 +1,18 @@
 {
-  "began_logging": "2025-06-06T19:07:13.112269900+12:00",
-  "version": "0.1.4",
+  "began_logging": "2025-06-06T19:11:00.589069300+12:00",
+  "version": "0.1.5",
   "filtering": true,
-  "logs": []
+  "logs": [
+    {
+      "filtering": true,
+      "time": "2025-06-06T19:11:07.882671800+12:00",
+      "prompt": "hi",
+      "response": [
+        "test",
+        ""
+      ],
+      "model": "llama3.2:3b",
+      "systemprompt": "You are a testing robot. You will respond to all prompts with the word 'test'."
+    }
+  ]
 }
