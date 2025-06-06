@@ -1,10 +1,11 @@
-#![windows_subsystem = "windows"]
+//#![windows_subsystem = "windows"]
 //std crate imports
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Poll, Context};
 //external crate imports
+use chrono::Local;
 use futures::Stream;
 use iced::{ clipboard, keyboard, Element, Size, Subscription, Task, Theme};
 use iced_widget::markdown;
@@ -18,6 +19,7 @@ use futures::stream::StreamExt;
 use webbrowser;
 use lazy_static::lazy_static;
 use serde_json;
+use serde::Serialize;
 use std::fs;
 use rustrict::Censor;
 //local file imports
@@ -42,6 +44,14 @@ lazy_static! {
         let (txprocess, rxprocess) = std::sync::mpsc::channel::<String>();
         return (txprocess, Arc::new(Mutex::new(rxprocess)));
     };
+
+    static ref LOGGING_CHANNEL: (
+        std::sync::mpsc::Sender<Log>,
+        Arc<Mutex<std::sync::mpsc::Receiver<Log>>>
+    ) = {
+        let (txprocess, rxprocess) = std::sync::mpsc::channel::<Log>();
+        return (txprocess, Arc::new(Mutex::new(rxprocess)));
+    };
 }
 
 // message enum defined to send communications to the GUI logic
@@ -60,6 +70,48 @@ enum Message {
     InstallModel(String),
     UpdateInstall(String)
 } 
+
+#[derive(Serialize)]
+struct Log { 
+    filtering: bool,
+    time: String, 
+    prompt: String, 
+    response: Vec<String>, 
+    model: Option<String>, 
+    systemprompt: Option<String>
+}
+
+impl Log { 
+    fn create_with_current_time(filtering: bool, model: Option<String>, response: Vec<String>, systemprompt: Option<String>, prompt: String) -> Self {
+        // let mut response_as_string: String = String::new();
+        // for r in response {
+        //     response_as_string.push_str(r.as_str());
+        // }
+
+        return Log { 
+            filtering: filtering, 
+            time: String::from(Local::now().to_rfc3339()), 
+            prompt: prompt, 
+            response: response, 
+            model: model, 
+            systemprompt: systemprompt
+        }
+    }
+
+}
+
+#[derive(Serialize)]
+struct History { 
+    began_logging: String, 
+    version: String, 
+    filtering: bool, 
+    logs: Vec<Log>
+}
+impl History { 
+    fn push_log(&mut self, log: Log) {
+        self.logs.push(log);
+    }
+}
 
 // program struct, stores the current program state
 // e.g., the current prompt, debug message, etc.
@@ -81,12 +133,20 @@ struct Program {
     model: Option<String>,
     installing_model: String,
     debug_message: String,
+    logs: History,
+    logging: bool,
 }
 
 // impliment the program function with several functions
 // to allow the program to function
 // e.g. view() is for gui logic
-impl Program {  
+impl Program { 
+    fn update_history(history: History) {
+        fs::write("history.json", serde_json::to_string_pretty(
+            &history 
+        ).unwrap()).expect("Unable to write to history.json");
+    } 
+
     fn prompt(&mut self, prompt: String) {
         // invalid case handler
         if self.model == None {
@@ -122,22 +182,24 @@ impl Program {
                 .to_string();
         } else { 
             println!("system prompt is None");
+            CHANNEL.0.send(false).unwrap();
             DEBUG_CHANNEL.0.send("System prompt not selected or is invalid".to_string()).unwrap();
             return; 
         }
         
         let filtering: bool = self.filtering.clone();
+        let logging = self.logging.clone();
         // create a new tokio runtime
         // this is done because the function is not async
         // but async programming must be done for the REST API calls
         runtime_handle.spawn(async move {
-            println!("Received prompt: {}", prompt);
+            println!("Received prompt: {}", prompt.clone());
             let ollama = Ollama::default();
-            let request = GenerationRequest::new(model.unwrap(), prompt)
+            let request = GenerationRequest::new(model.clone().unwrap(), prompt.clone())
                 .options(ModelOptions::default().temperature(0.6))
                 .system(system_prompt.clone());
             
-            println!("System prompt: {}", system_prompt);
+            println!("System prompt: {}", system_prompt.clone());
 
             let mut response = match ollama.generate_stream(request).await {
                 Ok(stream) => stream,
@@ -147,6 +209,8 @@ impl Program {
                     return 
                 }
             };
+            
+            let mut final_response: Vec<String> = vec![];
 
             // iterate through responses and send them to the mpsc channel
             while let Some(data) = response.next().await {
@@ -163,6 +227,7 @@ impl Program {
                                 token
                             };
                             
+                            final_response.push(filtered_token.clone().response);
                             if tx.send(filtered_token).is_err() {
                                 break;
                             }
@@ -176,6 +241,19 @@ impl Program {
             }
             // tells the is_processing channel to set the variable to false
             CHANNEL.0.send(false).unwrap();
+
+            //logs the information 
+            if logging == true { 
+                LOGGING_CHANNEL.0.send(
+                    Log::create_with_current_time(
+                        filtering,
+                        model,
+                        final_response, 
+                        Some(system_prompt),
+                        prompt
+                    )
+                ).unwrap();
+            }
         });
     }
 
@@ -258,6 +336,13 @@ impl Program {
                 }
                 if let Ok(debug_msg) = DEBUG_CHANNEL.1.lock().unwrap().try_recv() {
                     self.debug_message = debug_msg;
+                }
+                if let Ok(log) = LOGGING_CHANNEL.1.lock().unwrap().try_recv() {
+                    self.logs.push_log(log);
+                    
+                    fs::write("history.json", serde_json::to_string_pretty(
+                        &self.logs
+                    ).unwrap()).expect("Unable to write to history.json");
                 }
 
                 Task::none()
@@ -392,30 +477,48 @@ impl Program {
 
 impl Default for Program {
     fn default() -> Self {
+        // Reading defaultprompts.json 
+        // Ensures that the system prompts are loaded 
+        // and visible to user on start-up
         let data_prompts = fs::read_to_string("defaultprompts.json")
             .expect("Unable to read file");
         let system_prompts_as_prompt: HashMap<String, String> = serde_json::from_str(&data_prompts)
             .expect("JSON was not well-formatted");
         let mut system_prompts: Vec<String> = Vec::new();
-
         system_prompts_as_prompt.iter().for_each(|prompt| {
             system_prompts.push(prompt.0.clone());
         });
-
         println!("Loaded system prompts:\n{:?} ", system_prompts);
 
+
+        // Reading settings.json
+        // Ensures that users settings are loaded 
         let settings = fs::read_to_string("settings.json")
             .expect("Unable to read settings file");
         let settings_hmap: HashMap<String, bool> = serde_json::from_str(&settings)
             .expect("JSON was not well-formatted");
         let filtering = *settings_hmap.get("filtering")
             .unwrap_or(&true);
+        let logging = *settings_hmap.get("logging")
+            .unwrap_or(&false);
+        println!("Logging is set to: {}", logging);
 
+        // Writing to history.json for the first time
+        let history = History { 
+            began_logging: Local::now().to_rfc3339(),
+            version: "0.1.5".to_string(),
+            filtering: true,
+            logs: vec![]
+        };
 
-        println!("Filtering is set to: {}", filtering);
+        fs::write("history.json", serde_json::to_string_pretty(
+            &history
+        ).unwrap()).expect("Unable to write to history.json");
 
         // default values for Program 
         Self { 
+            logging: logging,
+            logs: history,
             system_prompts_as_prompt: system_prompts_as_prompt, 
             system_prompts: Arc::new(Mutex::new(system_prompts)), 
             system_prompt: Some(String::new()),
@@ -442,6 +545,9 @@ pub async fn main() -> iced::Result {
     let window_settings = iced::window::Settings {
         ..iced::window::Settings::default()
     };
+
+
+   
 
     // begins the application
     iced::application("ollama interface", Program::update, Program::view)

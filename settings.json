@@ -1,3 +1,4 @@
 {
-    "filtering": true
+    "filtering": true,
+    "logging": false
 }

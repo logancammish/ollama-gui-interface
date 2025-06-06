@@ -28,6 +28,7 @@ impl Program {
             .width(iced::Length::Fixed(270.0))
             .on_submit(Message::InstallModel(self.installing_model.clone()))
             .on_input(|input| { Message::UpdateInstall(input) });
+        let local_ollamastate =  self.ollama_state.lock().unwrap().clone();
 
                
         return container(
@@ -56,16 +57,21 @@ impl Program {
                     ).align_x(alignment::Horizontal::Right),
                     Space::with_height(Length::Fixed(20.0)),
                     // Installation
-                    widget::row!( 
-                        widget::text("To install Ollama, click "),
-                        widget::button("here.")
-                        .on_press(Message::InstallationPrompt)
-                        
-                    ),
+                    {
+                        if local_ollamastate == "Offline" {
+                            widget::row!( 
+                                widget::text("To install Ollama, click "),
+                                widget::button("here.")
+                                .on_press(Message::InstallationPrompt)
+                            )
+                        } else {
+                            widget::row!()
+                        }
+                    },
                     Space::with_height(Length::Fixed(10.0)),
                     // Show if ollama is detected as online
                     container( 
-                        widget::text(format!("Ollama is {}.", self.ollama_state.lock().unwrap().clone()))
+                        widget::text(format!("Ollama is {}.", local_ollamastate))
                     ),
                     // Choose bot
                     Space::with_height(Length::Fixed(10.0)),
