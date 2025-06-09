@@ -6,18 +6,18 @@ use crate::{Program, Message};
 
 impl Program {
     pub fn get_ui_information(&self) -> iced::widget::Container<Message> { 
-        let bots_list = self.bots_list.lock().unwrap().clone();
-        let prompts_list = self.system_prompts.lock().unwrap().clone();
+        let bots_list = self.app_state.bots_list.lock().unwrap().clone();
+        let prompts_list = self.system_prompt.system_prompts_as_vec.lock().unwrap().clone();
 
        // let parsed_markdown = self.parsed_markdown.clone(); // Arc<Mutex<_>>
         let prompt = iced::widget::TextInput::<Message>::new(
             "Prompt",
-            &self.prompt,
+            &self.prompt.prompt,
         )
             .padding(10)
             .size(20)
             .width(iced::Length::Fill)
-            .on_submit(Message::Prompt(self.prompt.clone()))
+            .on_submit(Message::Prompt(self.prompt.prompt.clone()))
             .on_input(|input| { Message::UpdatePrompt(input) });
         let model_install = iced::widget::TextInput::<Message>::new(
             "Model name",
@@ -28,7 +28,7 @@ impl Program {
             .width(iced::Length::Fixed(270.0))
             .on_submit(Message::InstallModel(self.installing_model.clone()))
             .on_input(|input| { Message::UpdateInstall(input) });
-        let local_ollamastate =  self.ollama_state.lock().unwrap().clone();
+        let local_ollamastate =  self.app_state.ollama_state.lock().unwrap().clone();
 
                
         return container(
@@ -36,7 +36,7 @@ impl Program {
                     // Output from the model
                     widget::scrollable( 
                         markdown::view(
-                            &self.parsed_markdown,
+                            &self.response.parsed_markdown,
                             markdown::Settings::default(),
                             markdown::Style::from_palette(Theme::Dracula.palette())
                         ).map(|_| Message::None)
@@ -44,7 +44,7 @@ impl Program {
                     // Copy button
                     widget::row!(
                         widget::button("Copy")
-                            .on_press(Message::CopyPressed(self.response.lock().unwrap().clone())
+                            .on_press(Message::CopyPressed(self.response.response_as_string.lock().unwrap().clone())
                         )  
                     ).width(Length::Fill),   
                     Space::with_height(Length::Fixed(10.0)),
@@ -53,7 +53,7 @@ impl Program {
                     Space::with_height(Length::Fixed(10.0)),
                     // Enter button
                     container(
-                        widget::row!(iced::widget::button("Enter").on_press(Message::Prompt(self.prompt.clone()))),
+                        widget::row!(iced::widget::button("Enter").on_press(Message::Prompt(self.prompt.prompt.clone()))),
                     ).align_x(alignment::Horizontal::Right),
                     Space::with_height(Length::Fixed(20.0)),
                     // Installation
@@ -78,7 +78,7 @@ impl Program {
                     widget::text("Select model:"),
                     widget::pick_list(
                         bots_list,
-                        self.model.clone(),
+                        self.user_information.model.clone(),
                         Message::ModelChange,
                     ),
                     // Choose sys prompt 
@@ -86,7 +86,7 @@ impl Program {
                     widget::text("Select system prompt:"),
                     widget::pick_list(
                         prompts_list,
-                        self.system_prompt.clone(),
+                        self.system_prompt.system_prompt.clone(),
                         Message::SystemPromptChange,
                     ), 
                     Space::with_height(Length::Fixed(10.0)),

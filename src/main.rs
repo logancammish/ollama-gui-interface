@@ -1,4 +1,4 @@
-#![windows_subsystem = "windows"]
+//#![windows_subsystem = "windows"]
 //std crate imports
 use std::collections::HashMap;
 use std::pin::Pin;
@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::task::{Poll, Context};
 //external crate imports
 use chrono::Local;
-use futures::Stream;
+use futures::{channel, Stream};
 use iced::{ clipboard, keyboard, Element, Size, Subscription, Task, Theme};
 use iced_widget::markdown;
 use ollama_rs::generation::completion::GenerationResponse;
@@ -17,7 +17,6 @@ use tokio::runtime::Runtime;
 use iced_native::subscription::Recipe;
 use futures::stream::StreamExt;
 use webbrowser;
-use lazy_static::lazy_static;
 use serde_json;
 use serde::Serialize;
 use std::fs;
@@ -25,34 +24,6 @@ use rustrict::Censor;
 //local file imports
 mod gui; 
 
-// define lazy_static mpsc channels which will
-// allow for interaction between threads and runtimes
-// only for main.rs file
-lazy_static! {
-    static ref CHANNEL: (
-        std::sync::mpsc::Sender<bool>,
-        Arc<Mutex<std::sync::mpsc::Receiver<bool>>>
-    ) = {
-        let (txprocess, rxprocess) = std::sync::mpsc::channel::<bool>();
-        return (txprocess, Arc::new(Mutex::new(rxprocess)));
-    };
-
-    static ref DEBUG_CHANNEL: (
-        std::sync::mpsc::Sender<String>,
-        Arc<Mutex<std::sync::mpsc::Receiver<String>>>
-    ) = {
-        let (txprocess, rxprocess) = std::sync::mpsc::channel::<String>();
-        return (txprocess, Arc::new(Mutex::new(rxprocess)));
-    };
-
-    static ref LOGGING_CHANNEL: (
-        std::sync::mpsc::Sender<Log>,
-        Arc<Mutex<std::sync::mpsc::Receiver<Log>>>
-    ) = {
-        let (txprocess, rxprocess) = std::sync::mpsc::channel::<Log>();
-        return (txprocess, Arc::new(Mutex::new(rxprocess)));
-    };
-}
 
 // message enum defined to send communications to the GUI logic
 #[derive(Debug, Clone)]
@@ -71,7 +42,7 @@ enum Message {
     UpdateInstall(String)
 } 
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 struct Log { 
     filtering: bool,
     time: String, 
@@ -100,7 +71,7 @@ impl Log {
 
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 struct History { 
     began_logging: String, 
     version: String, 
@@ -113,28 +84,71 @@ impl History {
     }
 }
 
+struct AppState { 
+    filtering: bool, 
+    logs: History, 
+    logging: bool, 
+    ollama_state: Arc<Mutex<String>>,
+    bots_list: Arc<Mutex<Vec<String>>>,
+}
+
+#[derive(Clone)]
+struct SystemPrompt {
+    system_prompts_as_hashmap: HashMap<String, String>,
+    system_prompts_as_vec: Arc<Mutex<Vec<String>>>,
+    system_prompt: Option<String>,
+}
+
+impl SystemPrompt { 
+    fn get_current(program: &Program) -> Option<String> { 
+        let system_prompt: Self = program.system_prompt.clone(); 
+
+        if system_prompt.system_prompts_as_hashmap.get(&system_prompt.system_prompt.clone().unwrap()).is_some() {
+            return program.system_prompt.system_prompts_as_hashmap.get(&system_prompt.system_prompt.clone().unwrap()).cloned();
+        } else { 
+            println!("system prompt is None");
+            return None; 
+        }
+    }
+}
+
+struct UserInformation {
+    model: Option<String> ,
+}
+
+#[derive(Clone)]
+struct Channels {
+    markdown_channel_reciever: crossbeam_channel::Receiver<Vec<markdown::Item>>,
+    debug_channel: Arc<Mutex<(std::sync::mpsc::Sender<String>, std::sync::mpsc::Receiver<String>)>>,
+    debounce_channel: Arc<Mutex<(std::sync::mpsc::Sender<bool>, std::sync::mpsc::Receiver<bool>)>>,
+    logging_channel: Arc<Mutex<(std::sync::mpsc::Sender<Log>, std::sync::mpsc::Receiver<Log>)>>,
+}
+
+struct Response { 
+    response_as_string: Arc<Mutex<String>>,
+    parsed_markdown: Vec<markdown::Item>,
+}
+
+struct Prompt { 
+    prompt_time_sent: std::time::Instant,
+    prompt: String
+}
+
 // program struct, stores the current program state
 // e.g., the current prompt, debug message, etc.
 struct Program { 
-    system_prompts_as_prompt: HashMap<String, String>,
-    system_prompts: Arc<Mutex<Vec<String>>>,
-    system_prompt: Option<String>,
-    filtering: bool,
-    prompt: String,
-    prompt_time_sent: std::time::Instant,
     runtime: Runtime,
-    response: Arc<Mutex<String>>,
-    parsed_markdown: Vec<markdown::Item>,
-    markdown_receiver: crossbeam_channel::Receiver<Vec<markdown::Item>>,
     is_processing: bool,
-    ollama_state: Arc<Mutex<String>>,
     current_tick: i32,
-    bots_list: Arc<Mutex<Vec<String>>>,
-    model: Option<String>,
     installing_model: String,
     debug_message: String,
-    logs: History,
-    logging: bool,
+
+    system_prompt: SystemPrompt,
+    app_state: AppState, 
+    channels: Channels, 
+    user_information: UserInformation,
+    response: Response,
+    prompt: Prompt
 }
 
 // impliment the program function with several functions
@@ -149,19 +163,19 @@ impl Program {
 
     fn prompt(&mut self, prompt: String) {
         // invalid case handler
-        if self.model == None {
-            CHANNEL.0.send(false).unwrap();
-            DEBUG_CHANNEL.0.send("Model selected is invalid, have you selected a model?".to_string()).unwrap();
+        if self.user_information.model == None {
+            self.channels.debounce_channel.lock().unwrap().0.send(false).unwrap();
+            self.channels.debug_channel.lock().unwrap().0.send("Model selected is invalid, have you selected a model?".to_string()).unwrap();
             println!("Model is None");
             return; 
         }
 
-        self.prompt_time_sent = std::time::Instant::now();
+        self.prompt.prompt_time_sent = std::time::Instant::now();
 
         let (markdown_sender, markdown_receiver) = crossbeam_channel::unbounded();
-        self.markdown_receiver = markdown_receiver;
-        let runtime_handle = self.runtime.handle().clone();
-        let response_arc = Arc::clone(&self.response);
+        self.channels.markdown_channel_reciever = markdown_receiver;
+        //let runtime_handle = self.runtime.handle().clone();
+        let response_arc = Arc::clone(&self.response.response_as_string);
         let (tx, rx) = std::sync::mpsc::channel::<GenerationResponse>();
 
         // create a new thread to prevent blocking
@@ -174,26 +188,24 @@ impl Program {
             }
         });
 
-        let system_prompt: String;
-        let model = self.model.clone();
-        if self.system_prompts_as_prompt.get(&self.system_prompt.clone().unwrap()).is_some() {
-            system_prompt = self.system_prompts_as_prompt.get(&self.system_prompt.clone().unwrap())
-                .expect("System prompt not found")
-                .to_string();
-        } else { 
-            println!("system prompt is None");
-            CHANNEL.0.send(false).unwrap();
-            DEBUG_CHANNEL.0.send("System prompt not selected or is invalid".to_string()).unwrap();
-            return; 
+        let system_prompt: Option<String> = SystemPrompt::get_current(&self);
+        if system_prompt.is_none() { 
+            self.channels.debounce_channel.lock().unwrap().0.send(false).unwrap();
+            self.channels.debug_channel.lock().unwrap().0.send("System prompt not selected or is invalid".to_string()).unwrap();
+            return;
         }
         
-        let filtering: bool = self.filtering.clone();
-        let logging = self.logging.clone();
+        let model = self.user_information.model.clone(); 
+        let logging = self.app_state.logging.clone(); 
+        let filtering = self.app_state.filtering.clone(); 
+        let channels = self.channels.clone();
         // create a new tokio runtime
         // this is done because the function is not async
         // but async programming must be done for the REST API calls
-        runtime_handle.spawn(async move {
+        self.runtime.spawn(async move {           
             println!("Received prompt: {}", prompt.clone());
+
+            let system_prompt = system_prompt.unwrap(); 
             let ollama = Ollama::default();
             let request = GenerationRequest::new(model.clone().unwrap(), prompt.clone())
                 .options(ModelOptions::default().temperature(0.6))
@@ -205,7 +217,7 @@ impl Program {
                 Ok(stream) => stream,
                 Err(e) => {
                     eprintln!("Error generating response: {}", e);            
-                    CHANNEL.0.send(false).unwrap();
+                    channels.debounce_channel.lock().unwrap().0.send(false).unwrap();
                     return 
                 }
             };
@@ -240,11 +252,11 @@ impl Program {
                 }
             }
             // tells the is_processing channel to set the variable to false
-            CHANNEL.0.send(false).unwrap();
+            channels.debounce_channel.lock().unwrap().0.send(false).unwrap();
 
             //logs the information 
             if logging == true { 
-                LOGGING_CHANNEL.0.send(
+                channels.logging_channel.lock().unwrap().0.send(
                     Log::create_with_current_time(
                         filtering,
                         model,
@@ -269,7 +281,7 @@ impl Program {
             // - check the currently installed bots
             // - handle mpsc channels
             Message::Tick => { 
-                let runtime_handle = self.runtime.handle().clone();
+                //let runtime_handle = self.runtime.handle().clone();
 
                 if self.current_tick > 20000 {
                     self.current_tick = 0;
@@ -277,9 +289,9 @@ impl Program {
                 self.current_tick += 1; 
 
                 if (self.current_tick == 0) || (self.current_tick == 5000) {
-                    let ollama_state = Arc::clone(&self.ollama_state);
+                    let ollama_state = Arc::clone(&self.app_state.ollama_state);
 
-                    runtime_handle.spawn(async move {
+                    self.runtime.spawn(async move {
                         match reqwest::get("http://127.0.0.1:11434/api/version").await {
                             Ok(response) => {
                                 if response.status().is_success() {
@@ -307,9 +319,10 @@ impl Program {
                     });
                 } else if self.current_tick == 1000 {      
                     let ollama = Ollama::default();
-                    let bots_list = Arc::clone(&self.bots_list);
+                    let bots_list = Arc::clone(&self.app_state.bots_list);
+                    let channels = self.channels.clone();
 
-                    runtime_handle.spawn(async move {
+                    self.runtime.spawn(async move {
                         match ollama.list_local_models().await {
                             Ok(bots) => {
                                 bots.iter().for_each(|bot| {
@@ -320,7 +333,7 @@ impl Program {
                                 });
                             }
                             Err(e) => {
-                                DEBUG_CHANNEL.0.send("Error occured during tick 1000, while listing bots".to_string())
+                                channels.debug_channel.lock().unwrap().0.send("Error occured during tick 1000, while listing bots".to_string())
                                     .expect("Error occured sending information to debugchannel tick1000");
                                 println!("Error: tick 1000 {:?}", e);
                             }
@@ -328,20 +341,20 @@ impl Program {
                     });
                 }
 
-                if let Ok(md) = self.markdown_receiver.try_recv() {
-                    self.parsed_markdown = md;
+                if let Ok(md) = self.channels.markdown_channel_reciever.try_recv() {
+                    self.response.parsed_markdown = md;
                 }
-                if let Ok(is_processing) = CHANNEL.1.lock().unwrap().try_recv() {
+                if let Ok(is_processing) = self.channels.debounce_channel.lock().unwrap().1.try_recv() {
                     self.is_processing = is_processing;
                 }
-                if let Ok(debug_msg) = DEBUG_CHANNEL.1.lock().unwrap().try_recv() {
+                if let Ok(debug_msg) = self.channels.debug_channel.lock().unwrap().1.try_recv()  {
                     self.debug_message = debug_msg;
                 }
-                if let Ok(log) = LOGGING_CHANNEL.1.lock().unwrap().try_recv() {
-                    self.logs.push_log(log);
-                    
+                if let Ok(log) = self.channels.logging_channel.lock().unwrap().1.try_recv() {
+                    self.app_state.logs.push_log(log);
+
                     fs::write("history.json", serde_json::to_string_pretty(
-                        &self.logs
+                        &self.app_state.logs
                     ).unwrap()).expect("Unable to write to history.json");
                 }
 
@@ -349,26 +362,26 @@ impl Program {
             }
 
             Message::SystemPromptChange(system_prompt) => {
-                self.system_prompt = Some(system_prompt);
+                self.system_prompt.system_prompt = Some(system_prompt);
                 Task::none()
             }
 
             Message::InstallModel(model_install) => {
-                DEBUG_CHANNEL.0.send(format!("Installing model... {}", model_install).to_string()).unwrap();
+                self.channels.debug_channel.lock().unwrap().0.send(format!("Installing model... {}", model_install).to_string()).unwrap();
 
-                let runtime_handle = self.runtime.handle().clone();
+                //let runtime_handle = self.runtime.handle().clone();
                 let ollama = Ollama::default();
-                
+                let channels = self.channels.clone();
 
-                runtime_handle.spawn(async move {
+                self.runtime.spawn(async move {
                     match ollama.pull_model(model_install.clone(), false).await {
                         Ok(outcome) => {
                             println!("Model {} installed successfully: {}", model_install, outcome.message);     
-                            DEBUG_CHANNEL.0.send(format!("Installed model {}: {}", model_install, outcome.message)).unwrap();
+                            channels.debug_channel.lock().unwrap().0.send(format!("Installed model {}: {}", model_install, outcome.message)).unwrap();
                         }  
                         Err(outcome) => {
                             println!("Failed to install model {}: {:?}", model_install, outcome);
-                            DEBUG_CHANNEL.0.send(format!("Failed to install model {}", model_install)).unwrap();
+                            channels.debug_channel.lock().unwrap().0.send(format!("Failed to install model {}", model_install)).unwrap();
                         }
                     };
                 });
@@ -376,7 +389,7 @@ impl Program {
             }
 
             Message::ModelChange(model) => {
-                self.model = Some(model);
+                self.user_information.model = Some(model);
                 Task::none()
             }
             
@@ -416,15 +429,15 @@ impl Program {
             Message::Prompt(prompt) => {
                 if !self.is_processing {
                     self.is_processing = true;
-                    self.parsed_markdown = vec![];
-                    *self.response.lock().unwrap() = String::new(); 
+                    self.response.parsed_markdown = vec![];
+                    *self.response.response_as_string.lock().unwrap() = String::new(); 
                     Self::prompt(self, prompt.clone());
                 }
                 Task::none()
             }
 
             Message::UpdatePrompt(prompt) => {
-                self.prompt = prompt;
+                self.prompt.prompt = prompt;
                 Task::none()
             }
             Message::UpdateInstall(model) => {
@@ -506,7 +519,7 @@ impl Default for Program {
         // Writing to history.json for the first time
         let history = History { 
             began_logging: Local::now().to_rfc3339(),
-            version: "0.1.5".to_string(),
+            version: "0.2.0".to_string(),
             filtering: true,
             logs: vec![]
         };
@@ -516,26 +529,62 @@ impl Default for Program {
         ).unwrap()).expect("Unable to write to history.json");
 
         // default values for Program 
+        // Self { 
+        //     logging: logging,
+        //     logs: history,
+        //     system_prompts_as_prompt: system_prompts_as_prompt, 
+        //     system_prompts: Arc::new(Mutex::new(system_prompts)), 
+        //     system_prompt: Some(String::new()),
+        //     prompt: String::new(),
+        //     runtime: Runtime::new().expect("Failed to create Tokio runtime"), 
+        //     response: Arc::new(Mutex::new(String::from(""))),
+        //     parsed_markdown: vec![], 
+        //     markdown_receiver: crossbeam_channel::unbounded().1,
+        //     is_processing: false,
+        //     prompt_time_sent: std::time::Instant::now(),
+        //     ollama_state: Arc::new(Mutex::new("Offline".to_string())),
+        //     current_tick: 0,
+        //     filtering: filtering,
+        //     bots_list: Arc::new(Mutex::new(vec![])),
+        //     model: None,
+        //     installing_model: String::new(),
+        //     debug_message: String::new(),
+        // }
         Self { 
-            logging: logging,
-            logs: history,
-            system_prompts_as_prompt: system_prompts_as_prompt, 
-            system_prompts: Arc::new(Mutex::new(system_prompts)), 
-            system_prompt: Some(String::new()),
-            prompt: String::new(),
             runtime: Runtime::new().expect("Failed to create Tokio runtime"), 
-            response: Arc::new(Mutex::new(String::from(""))),
-            parsed_markdown: vec![], 
-            markdown_receiver: crossbeam_channel::unbounded().1,
             is_processing: false,
-            prompt_time_sent: std::time::Instant::now(),
-            ollama_state: Arc::new(Mutex::new("Offline".to_string())),
             current_tick: 0,
-            filtering: filtering,
-            bots_list: Arc::new(Mutex::new(vec![])),
-            model: None,
             installing_model: String::new(),
             debug_message: String::new(),
+            system_prompt: SystemPrompt { 
+                system_prompts_as_hashmap: system_prompts_as_prompt, 
+                system_prompts_as_vec: Arc::new(Mutex::new(system_prompts)), 
+                system_prompt: Some(String::new())
+            },
+            channels: Channels { 
+                markdown_channel_reciever: crossbeam_channel::unbounded().1, 
+                debug_channel: Arc::new(Mutex::new(std::sync::mpsc::channel::<String>())), 
+                debounce_channel: Arc::new(Mutex::new(std::sync::mpsc::channel::<bool>())), 
+                logging_channel:  Arc::new(Mutex::new(std::sync::mpsc::channel::<Log>()))
+            },
+            user_information: UserInformation { 
+                model: None, 
+            },
+            response: Response { 
+                response_as_string: Arc::new(Mutex::new(String::new())), 
+                parsed_markdown: vec![] 
+            },
+            prompt: Prompt { 
+                prompt_time_sent: std::time::Instant::now(),
+                prompt: String::new() 
+            },
+            app_state: AppState { 
+                filtering: filtering, 
+                logs: history, 
+                logging: logging, 
+                ollama_state: Arc::new(Mutex::new("Offline".to_string())), 
+                bots_list:  Arc::new(Mutex::new(vec![]))
+            }, 
         }
     }
 }
