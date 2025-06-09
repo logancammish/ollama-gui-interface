@@ -1,4 +1,4 @@
-//#![windows_subsystem = "windows"]
+#![windows_subsystem = "windows"]
 //std crate imports
 use std::collections::HashMap;
 use std::pin::Pin;
@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::task::{Poll, Context};
 //external crate imports
 use chrono::Local;
-use futures::{channel, Stream};
+use futures::Stream;
 use iced::{ clipboard, keyboard, Element, Size, Subscription, Task, Theme};
 use iced_widget::markdown;
 use ollama_rs::generation::completion::GenerationResponse;
@@ -281,8 +281,6 @@ impl Program {
             // - check the currently installed bots
             // - handle mpsc channels
             Message::Tick => { 
-                //let runtime_handle = self.runtime.handle().clone();
-
                 if self.current_tick > 20000 {
                     self.current_tick = 0;
                 }
