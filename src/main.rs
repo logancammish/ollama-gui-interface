@@ -517,7 +517,7 @@ impl Default for Program {
         // Writing to history.json for the first time
         let history = History { 
             began_logging: Local::now().to_rfc3339(),
-            version: "0.2.0".to_string(),
+            version: "0.2.1".to_string(),
             filtering: true,
             logs: vec![]
         };
