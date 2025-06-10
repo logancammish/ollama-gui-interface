@@ -24,6 +24,15 @@ use rustrict::Censor;
 //local file imports
 mod gui; 
 
+/// Tick points:
+/// Each tick occurs every 1ms; so these will perform certain actions 
+/// at each corresponding tick.
+/// These are constants for the purpose of easy modification. 
+const VERSION_TICK: i32 = 5000; // The tick in which the version of the program will be checked 
+const MAX_TICK: i32 = 20000; // The maximum tick in which the ticks will reset
+const BOT_LIST_TICK: i32 = 1000; // The tick in which the Ollama bots list will be checked
+
+
 
 // message enum defined to send communications to the GUI logic
 #[derive(Debug, Clone)]
@@ -42,6 +51,7 @@ enum Message {
     UpdateInstall(String)
 } 
 
+// log struct allows for easy JSON creation 
 #[derive(Serialize, Clone)]
 struct Log { 
     filtering: bool,
@@ -53,12 +63,8 @@ struct Log {
 }
 
 impl Log { 
+    // this function will create a new Log with the information specified on the current time
     fn create_with_current_time(filtering: bool, model: Option<String>, response: Vec<String>, systemprompt: Option<String>, prompt: String) -> Self {
-        // let mut response_as_string: String = String::new();
-        // for r in response {
-        //     response_as_string.push_str(r.as_str());
-        // }
-
         return Log { 
             filtering: filtering, 
             time: String::from(Local::now().to_rfc3339()), 
@@ -71,6 +77,7 @@ impl Log {
 
 }
 
+// History struct allows for easy JSON creation 
 #[derive(Serialize, Clone)]
 struct History { 
     began_logging: String, 
@@ -79,11 +86,13 @@ struct History {
     logs: Vec<Log>
 }
 impl History { 
+    // will push a Log to the History.logs
     fn push_log(&mut self, log: Log) {
         self.logs.push(log);
     }
 }
 
+// AppState keeps information on certain important information
 struct AppState { 
     filtering: bool, 
     logs: History, 
@@ -92,6 +101,7 @@ struct AppState {
     bots_list: Arc<Mutex<Vec<String>>>,
 }
 
+// SystemPrompt saves the current system prompts and the currently selected system prompt
 #[derive(Clone)]
 struct SystemPrompt {
     system_prompts_as_hashmap: HashMap<String, String>,
@@ -100,6 +110,7 @@ struct SystemPrompt {
 }
 
 impl SystemPrompt { 
+    // gets the currently selected system prompt
     fn get_current(program: &Program) -> Option<String> { 
         let system_prompt: Self = program.system_prompt.clone(); 
 
@@ -112,10 +123,18 @@ impl SystemPrompt {
     }
 }
 
+// UserInformation saves certain important information about the program specific to the current user 
 struct UserInformation {
     model: Option<String> ,
 }
 
+/// Channels
+/// These channels are either crossbeam or mpsc channels designed for easy communication 
+/// between runtimes. 
+/// markdown_channel_reciever: Crossbeam channel reciever for markdown content to the GUI
+/// debug_channel: mpsc channel for sending debug information to GUI
+/// debounce_channel: mpsc channel for preventing certain things from occuring at the same time
+/// logging_channel: mpsc channel for communication with the logging feature of the program
 #[derive(Clone)]
 struct Channels {
     markdown_channel_reciever: crossbeam_channel::Receiver<Vec<markdown::Item>>,
@@ -124,11 +143,13 @@ struct Channels {
     logging_channel: Arc<Mutex<(std::sync::mpsc::Sender<Log>, std::sync::mpsc::Receiver<Log>)>>,
 }
 
+// Response saves the current response as both parsed markdown and a string
 struct Response { 
     response_as_string: Arc<Mutex<String>>,
     parsed_markdown: Vec<markdown::Item>,
 }
 
+// Prompt saves the current prompt and time sent 
 struct Prompt { 
     prompt_time_sent: std::time::Instant,
     prompt: String
@@ -142,7 +163,6 @@ struct Program {
     current_tick: i32,
     installing_model: String,
     debug_message: String,
-
     system_prompt: SystemPrompt,
     app_state: AppState, 
     channels: Channels, 
@@ -155,12 +175,15 @@ struct Program {
 // to allow the program to function
 // e.g. view() is for gui logic
 impl Program { 
+    // unused function that will update the history.json file
     fn update_history(history: History) {
         fs::write("history.json", serde_json::to_string_pretty(
             &history 
         ).unwrap()).expect("Unable to write to history.json");
     } 
 
+    // this function will prompt the Ollama interface and recieve a reaction, 
+    // then send this information to the GUI
     fn prompt(&mut self, prompt: String) {
         // invalid case handler
         if self.user_information.model == None {
@@ -269,6 +292,8 @@ impl Program {
         });
     }
 
+    // update function which updates occurding to the current subscription,
+    // this handles Message requests
     fn update(&mut self, message: Message) -> Task<Message>  {
         match message { 
             Message::None => {
@@ -281,12 +306,12 @@ impl Program {
             // - check the currently installed bots
             // - handle mpsc channels
             Message::Tick => { 
-                if self.current_tick > 20000 {
+                if self.current_tick > MAX_TICK {
                     self.current_tick = 0;
                 }
                 self.current_tick += 1; 
 
-                if (self.current_tick == 0) || (self.current_tick == 5000) {
+                if self.current_tick == VERSION_TICK {
                     let ollama_state = Arc::clone(&self.app_state.ollama_state);
 
                     self.runtime.spawn(async move {
@@ -315,7 +340,7 @@ impl Program {
                             }
                         }
                     });
-                } else if self.current_tick == 1000 {      
+                } else if self.current_tick == BOT_LIST_TICK {      
                     let ollama = Ollama::default();
                     let bots_list = Arc::clone(&self.app_state.bots_list);
                     let channels = self.channels.clone();
@@ -331,9 +356,9 @@ impl Program {
                                 });
                             }
                             Err(e) => {
-                                channels.debug_channel.lock().unwrap().0.send("Error occured during tick 1000, while listing bots".to_string())
-                                    .expect("Error occured sending information to debugchannel tick1000");
-                                println!("Error: tick 1000 {:?}", e);
+                                channels.debug_channel.lock().unwrap().0.send("Error occured while listing bots".to_string())
+                                    .expect("Error occured sending information to debugchannel");
+                                println!("Error: {:?}", e);
                             }
                         }
                     });
@@ -445,6 +470,7 @@ impl Program {
         }
     }
 
+    // display the GUI
     fn view(&self) -> Element<Message> {
         Self::get_ui_information(self).into()
     }
@@ -526,28 +552,6 @@ impl Default for Program {
             &history
         ).unwrap()).expect("Unable to write to history.json");
 
-        // default values for Program 
-        // Self { 
-        //     logging: logging,
-        //     logs: history,
-        //     system_prompts_as_prompt: system_prompts_as_prompt, 
-        //     system_prompts: Arc::new(Mutex::new(system_prompts)), 
-        //     system_prompt: Some(String::new()),
-        //     prompt: String::new(),
-        //     runtime: Runtime::new().expect("Failed to create Tokio runtime"), 
-        //     response: Arc::new(Mutex::new(String::from(""))),
-        //     parsed_markdown: vec![], 
-        //     markdown_receiver: crossbeam_channel::unbounded().1,
-        //     is_processing: false,
-        //     prompt_time_sent: std::time::Instant::now(),
-        //     ollama_state: Arc::new(Mutex::new("Offline".to_string())),
-        //     current_tick: 0,
-        //     filtering: filtering,
-        //     bots_list: Arc::new(Mutex::new(vec![])),
-        //     model: None,
-        //     installing_model: String::new(),
-        //     debug_message: String::new(),
-        // }
         Self { 
             runtime: Runtime::new().expect("Failed to create Tokio runtime"), 
             is_processing: false,
@@ -592,10 +596,7 @@ pub async fn main() -> iced::Result {
     let window_settings = iced::window::Settings {
         ..iced::window::Settings::default()
     };
-
-
-   
-
+    
     // begins the application
     iced::application("ollama interface", Program::update, Program::view)
         .window_size(Size::new(700.0, 720.0))
