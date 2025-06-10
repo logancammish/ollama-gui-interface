@@ -654,12 +654,26 @@ pub async fn main() -> iced::Result {
         icon: icon,
         ..iced::window::Settings::default()
     };
+
+    // Reading settings.json
+    let settings = fs::read_to_string("./config/settings.json")
+            .expect("Unable to read settings file");
+    let settings_hmap: HashMap<String, bool> = serde_json::from_str(&settings)
+            .expect("JSON was not well-formatted");
+    let dark_mode = *settings_hmap.get("dark_mode")
+        .unwrap_or(&false);
+    
+    let mode: Theme = if dark_mode {
+        Theme::Dark
+    } else {
+        Theme::Light
+    };
     
     // begins the application
     iced::application("Ollama GUI Interface", Program::update, Program::view)
         .window_size(Size::new(700.0, 720.0))
         .subscription(Program::subscription)
-        .theme(|_| Theme::Dracula)
+        .theme(move |_| mode.clone())
         .window(window_settings)
         .run()
 }

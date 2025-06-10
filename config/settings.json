@@ -1,4 +1,5 @@
 {
     "filtering": true,
-    "logging": false
+    "logging": false,
+    "dark_mode": true
 }
