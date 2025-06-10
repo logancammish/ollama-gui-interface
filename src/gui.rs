@@ -1,4 +1,4 @@
-use iced::{alignment, widget::{self, container}, Length, Theme};
+use iced::{alignment, widget::{self, container}, Color, Length, Theme};
 use iced_widget::{markdown, Space};
 
 use crate::{Program, Message};
@@ -107,7 +107,8 @@ impl Program {
                         model_install,
                     ),
                     Space::with_height(Length::Fixed(10.0)),
-                    widget::text(self.debug_message.clone())
+                    //Debug message
+                    widget::text(self.debug_message.clone()).color(Color::from_rgb(0.8, 0.2, 0.2)),
 
                     
                 ]

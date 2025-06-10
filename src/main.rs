@@ -1,4 +1,4 @@
-//#![windows_subsystem = "windows"]
+#![windows_subsystem = "windows"]
 //std crate imports
 use std::collections::HashMap;
 use std::pin::Pin;
@@ -21,6 +21,7 @@ use serde_json;
 use serde::Serialize;
 use std::fs;
 use rustrict::Censor;
+use image;
 //local file imports
 mod gui; 
 
@@ -221,7 +222,6 @@ impl Program {
 
         let (markdown_sender, markdown_receiver) = crossbeam_channel::unbounded();
         self.channels.markdown_channel_reciever = markdown_receiver;
-        //let runtime_handle = self.runtime.handle().clone();
         let response_arc = Arc::clone(&self.response.response_as_string);
         let (tx, rx) = std::sync::mpsc::channel::<GenerationResponse>();
 
@@ -266,7 +266,7 @@ impl Program {
                 Ok(stream) => stream,
                 Err(e) => {
                     eprintln!("Error generating response: {}", e);            
-                    Channels::send_request_to_channel(Arc::clone(&channels.debug_channel), "error getting ollama response".to_string());
+                    Channels::send_request_to_channel(Arc::clone(&channels.debug_channel), "Error getting ollama response (have you enabled thinking on a bot which does not allow this feature?)".to_string());
                     Channels::send_request_to_channel(Arc::clone(&channels.debounce_channel), false);                    return 
                 }
             };
@@ -401,7 +401,7 @@ impl Program {
                 if let Ok(log) = self.channels.logging_channel.lock().unwrap().1.try_recv() {
                     self.app_state.logs.push_log(log);
 
-                    fs::write("history.json", serde_json::to_string_pretty(
+                    fs::write("./output/history.json", serde_json::to_string_pretty(
                         &self.app_state.logs
                     ).unwrap()).expect("Unable to write to history.json");
                 }
@@ -422,7 +422,6 @@ impl Program {
             Message::InstallModel(model_install) => {
                 Channels::send_request_to_channel(Arc::clone(&self.channels.debug_channel), format!("Installing model... {}", model_install).to_string());
 
-                //let runtime_handle = self.runtime.handle().clone();
                 let ollama = Ollama::default();
                 let channels = self.channels.clone();
 
@@ -547,7 +546,7 @@ impl Default for Program {
         // Reading defaultprompts.json 
         // Ensures that the system prompts are loaded 
         // and visible to user on start-up
-        let data_prompts = fs::read_to_string("defaultprompts.json")
+        let data_prompts = fs::read_to_string("./config/defaultprompts.json")
             .expect("Unable to read file");
         let system_prompts_as_prompt: HashMap<String, String> = serde_json::from_str(&data_prompts)
             .expect("JSON was not well-formatted");
@@ -560,7 +559,7 @@ impl Default for Program {
 
         // Reading settings.json
         // Ensures that users settings are loaded 
-        let settings = fs::read_to_string("settings.json")
+        let settings = fs::read_to_string("./config/settings.json")
             .expect("Unable to read settings file");
         let settings_hmap: HashMap<String, bool> = serde_json::from_str(&settings)
             .expect("JSON was not well-formatted");
@@ -578,7 +577,7 @@ impl Default for Program {
             logs: vec![]
         };
 
-        fs::write("history.json", serde_json::to_string_pretty(
+        fs::write("./output/history.json", serde_json::to_string_pretty(
             &history
         ).unwrap()).expect("Unable to write to history.json");
 
@@ -624,7 +623,35 @@ impl Default for Program {
 
 #[tokio::main]
 pub async fn main() -> iced::Result {
+     let icon = match image::ImageReader::open("./assets/icon.ico") {
+        Ok(image_reader) => {
+            match image_reader.decode() {
+                Ok(img) => {
+                    let rgba_image = img.into_rgba8();
+                    let (width, height) = rgba_image.dimensions();
+                    
+                    match iced::window::icon::from_rgba(rgba_image.into_raw(), width, height) {
+                        Ok(icon) => Some(icon),
+                        Err(e) => {
+                            eprintln!("Failed to create icon: {}", e);
+                            None
+                        }
+                    }
+                },
+                Err(e) => {
+                    eprintln!("Failed to decode the image: {}", e);
+                    None
+                }
+            }
+        },
+        Err(e) => {
+            eprintln!("Failed to open the icon file: {}", e);
+            None
+        }
+    };
+
     let window_settings = iced::window::Settings {
+        icon: icon,
         ..iced::window::Settings::default()
     };
     
