@@ -1,4 +1,4 @@
-#![windows_subsystem = "windows"]
+//#![windows_subsystem = "windows"]
 //std crate imports
 use std::collections::HashMap;
 use std::pin::Pin;
@@ -31,12 +31,15 @@ mod gui;
 const VERSION_TICK: i32 = 5000; // The tick in which the version of the program will be checked 
 const MAX_TICK: i32 = 20000; // The maximum tick in which the ticks will reset
 const BOT_LIST_TICK: i32 = 1000; // The tick in which the Ollama bots list will be checked
+///
+const APP_VERSION: &str = "0.2.2"; // The current version of the application
 
 
 
 // message enum defined to send communications to the GUI logic
 #[derive(Debug, Clone)]
 enum Message {
+    ToggleThinking,
     SystemPromptChange(String),
     Prompt(String),
     UpdatePrompt(String),
@@ -111,13 +114,24 @@ struct SystemPrompt {
 
 impl SystemPrompt { 
     // gets the currently selected system prompt
-    fn get_current(program: &Program) -> Option<String> { 
-        let system_prompt: Self = program.system_prompt.clone(); 
+    fn get_current(program: &Program) -> Option<String> {
+        let system_prompt: SystemPrompt = program.system_prompt.clone(); 
+        let system_prompt_as_string: String = match system_prompt.system_prompt { 
+            Some(system_prompt) => system_prompt,
+            None => {
+                println!("Error getting system prompt");
+                Channels::send_request_to_channel(Arc::clone(&program.channels.debug_channel), "Could not get system prompt, is it selected?".to_string());
+                Channels::send_request_to_channel(Arc::clone(&program.channels.debounce_channel), false);
+                return None; 
+            }
+        }; 
 
-        if system_prompt.system_prompts_as_hashmap.get(&system_prompt.system_prompt.clone().unwrap()).is_some() {
-            return program.system_prompt.system_prompts_as_hashmap.get(&system_prompt.system_prompt.clone().unwrap()).cloned();
+        if system_prompt.system_prompts_as_hashmap.get(&system_prompt_as_string).is_some() {
+            return system_prompt.system_prompts_as_hashmap.get(&system_prompt_as_string).cloned();
         } else { 
             println!("system prompt is None");
+            Channels::send_request_to_channel(Arc::clone(&program.channels.debug_channel), "Could not get system prompt, is it selected?".to_string());
+            Channels::send_request_to_channel(Arc::clone(&program.channels.debounce_channel), false);
             return None; 
         }
     }
@@ -125,7 +139,8 @@ impl SystemPrompt {
 
 // UserInformation saves certain important information about the program specific to the current user 
 struct UserInformation {
-    model: Option<String> ,
+    model: Option<String>,
+    think: bool
 }
 
 /// Channels
@@ -135,6 +150,7 @@ struct UserInformation {
 /// debug_channel: mpsc channel for sending debug information to GUI
 /// debounce_channel: mpsc channel for preventing certain things from occuring at the same time
 /// logging_channel: mpsc channel for communication with the logging feature of the program
+
 #[derive(Clone)]
 struct Channels {
     markdown_channel_reciever: crossbeam_channel::Receiver<Vec<markdown::Item>>,
@@ -143,6 +159,20 @@ struct Channels {
     logging_channel: Arc<Mutex<(std::sync::mpsc::Sender<Log>, std::sync::mpsc::Receiver<Log>)>>,
 }
 
+impl Channels {
+    fn send_request_to_channel<T: Send + Clone> (channel: Arc<Mutex<(std::sync::mpsc::Sender<T>, std::sync::mpsc::Receiver<T>)>>, message: T) {        
+        match channel.lock() {
+            Ok(channel) => {
+                if let Err(e) = channel.0.send(message) {
+                    eprintln!("Failed to send: {}", e);
+                }
+            }
+            Err(e) => {                
+                eprintln!("Failed to send: {}", e);
+            }
+        }
+    }
+}
 // Response saves the current response as both parsed markdown and a string
 struct Response { 
     response_as_string: Arc<Mutex<String>>,
@@ -175,20 +205,14 @@ struct Program {
 // to allow the program to function
 // e.g. view() is for gui logic
 impl Program { 
-    // unused function that will update the history.json file
-    fn update_history(history: History) {
-        fs::write("history.json", serde_json::to_string_pretty(
-            &history 
-        ).unwrap()).expect("Unable to write to history.json");
-    } 
 
     // this function will prompt the Ollama interface and recieve a reaction, 
     // then send this information to the GUI
     fn prompt(&mut self, prompt: String) {
         // invalid case handler
         if self.user_information.model == None {
-            self.channels.debounce_channel.lock().unwrap().0.send(false).unwrap();
-            self.channels.debug_channel.lock().unwrap().0.send("Model selected is invalid, have you selected a model?".to_string()).unwrap();
+            Channels::send_request_to_channel(Arc::clone(&self.channels.debounce_channel), false);
+            Channels::send_request_to_channel(Arc::clone(&self.channels.debug_channel), "Model selected is invalid, have you selected a model?".to_string());
             println!("Model is None");
             return; 
         }
@@ -213,14 +237,16 @@ impl Program {
 
         let system_prompt: Option<String> = SystemPrompt::get_current(&self);
         if system_prompt.is_none() { 
-            self.channels.debounce_channel.lock().unwrap().0.send(false).unwrap();
-            self.channels.debug_channel.lock().unwrap().0.send("System prompt not selected or is invalid".to_string()).unwrap();
+            Channels::send_request_to_channel(Arc::clone(&self.channels.debug_channel), "Could not get system prompt, is it selected?".to_string());
+            Channels::send_request_to_channel(Arc::clone(&self.channels.debounce_channel), false);
             return;
         }
         
         let model = self.user_information.model.clone(); 
         let logging = self.app_state.logging.clone(); 
         let filtering = self.app_state.filtering.clone(); 
+        let thinking = self.user_information.think.clone();
+        println!("Thinking is set to: {}", thinking);
         let channels = self.channels.clone();
         // create a new tokio runtime
         // this is done because the function is not async
@@ -236,12 +262,12 @@ impl Program {
             
             println!("System prompt: {}", system_prompt.clone());
 
-            let mut response = match ollama.generate_stream(request).await {
+            let mut response = match ollama.generate_stream(request.think(thinking)).await {
                 Ok(stream) => stream,
                 Err(e) => {
                     eprintln!("Error generating response: {}", e);            
-                    channels.debounce_channel.lock().unwrap().0.send(false).unwrap();
-                    return 
+                    Channels::send_request_to_channel(Arc::clone(&channels.debug_channel), "error getting ollama response".to_string());
+                    Channels::send_request_to_channel(Arc::clone(&channels.debounce_channel), false);                    return 
                 }
             };
             
@@ -275,11 +301,11 @@ impl Program {
                 }
             }
             // tells the is_processing channel to set the variable to false
-            channels.debounce_channel.lock().unwrap().0.send(false).unwrap();
+            Channels::send_request_to_channel(Arc::clone(&channels.debounce_channel), false);
 
             //logs the information 
             if logging == true { 
-                channels.logging_channel.lock().unwrap().0.send(
+                Channels::send_request_to_channel(Arc::clone(&channels.logging_channel), 
                     Log::create_with_current_time(
                         filtering,
                         model,
@@ -287,8 +313,8 @@ impl Program {
                         Some(system_prompt),
                         prompt
                     )
-                ).unwrap();
-            }
+                );
+            } 
         });
     }
 
@@ -356,8 +382,7 @@ impl Program {
                                 });
                             }
                             Err(e) => {
-                                channels.debug_channel.lock().unwrap().0.send("Error occured while listing bots".to_string())
-                                    .expect("Error occured sending information to debugchannel");
+                                Channels::send_request_to_channel(Arc::clone(&channels.debug_channel), "Error occured while listing bots".to_string());
                                 println!("Error: {:?}", e);
                             }
                         }
@@ -384,13 +409,18 @@ impl Program {
                 Task::none()
             }
 
+            Message::ToggleThinking => {
+                self.user_information.think = !self.user_information.think;
+                Task::none()
+            }
+
             Message::SystemPromptChange(system_prompt) => {
                 self.system_prompt.system_prompt = Some(system_prompt);
                 Task::none()
             }
 
             Message::InstallModel(model_install) => {
-                self.channels.debug_channel.lock().unwrap().0.send(format!("Installing model... {}", model_install).to_string()).unwrap();
+                Channels::send_request_to_channel(Arc::clone(&self.channels.debug_channel), format!("Installing model... {}", model_install).to_string());
 
                 //let runtime_handle = self.runtime.handle().clone();
                 let ollama = Ollama::default();
@@ -400,11 +430,11 @@ impl Program {
                     match ollama.pull_model(model_install.clone(), false).await {
                         Ok(outcome) => {
                             println!("Model {} installed successfully: {}", model_install, outcome.message);     
-                            channels.debug_channel.lock().unwrap().0.send(format!("Installed model {}: {}", model_install, outcome.message)).unwrap();
+                            Channels::send_request_to_channel(Arc::clone(&channels.debug_channel), format!("Installed model {}: {}", model_install, outcome.message));
                         }  
                         Err(outcome) => {
                             println!("Failed to install model {}: {:?}", model_install, outcome);
-                            channels.debug_channel.lock().unwrap().0.send(format!("Failed to install model {}", model_install)).unwrap();
+                            Channels::send_request_to_channel(Arc::clone(&channels.debug_channel), format!("Failed to install model {}", model_install));
                         }
                     };
                 });
@@ -541,9 +571,9 @@ impl Default for Program {
         println!("Logging is set to: {}", logging);
 
         // Writing to history.json for the first time
-        let history = History { 
+        let history: History = History { 
             began_logging: Local::now().to_rfc3339(),
-            version: "0.2.1".to_string(),
+            version: APP_VERSION.to_string(),
             filtering: true,
             logs: vec![]
         };
@@ -571,6 +601,7 @@ impl Default for Program {
             },
             user_information: UserInformation { 
                 model: None, 
+                think: false
             },
             response: Response { 
                 response_as_string: Arc::new(Mutex::new(String::new())), 
@@ -598,7 +629,7 @@ pub async fn main() -> iced::Result {
     };
     
     // begins the application
-    iced::application("ollama interface", Program::update, Program::view)
+    iced::application("Ollama GUI Interface", Program::update, Program::view)
         .window_size(Size::new(700.0, 720.0))
         .subscription(Program::subscription)
         .theme(|_| Theme::Dracula)

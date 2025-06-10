@@ -73,9 +73,19 @@ impl Program {
                     container( 
                         widget::text(format!("Ollama is {}.", local_ollamastate))
                     ),
-                    // Choose bot
+                    // Choose bot / enable/disable thinking
                     Space::with_height(Length::Fixed(10.0)),
-                    widget::text("Select model:"),
+                    widget::row!(
+                        widget::text("Select model:"),
+                        Space::with_width(Length::Fixed(280.0)),
+                        widget::text("Thinking (only on applicable models):"),
+                        Space::with_width(Length::Fixed(5.0)),
+                        widget::checkbox(
+                            "",
+                            self.user_information.think,
+                        ).on_toggle(|_| Message::ToggleThinking),
+                    ),
+                    Space::with_height(Length::Fixed(5.0)),
                     widget::pick_list(
                         bots_list,
                         self.user_information.model.clone(),
@@ -84,13 +94,14 @@ impl Program {
                     // Choose sys prompt 
                     Space::with_height(Length::Fixed(10.0)),
                     widget::text("Select system prompt:"),
+                    Space::with_height(Length::Fixed(5.0)),
                     widget::pick_list(
                         prompts_list,
                         self.system_prompt.system_prompt.clone(),
                         Message::SystemPromptChange,
                     ), 
                     Space::with_height(Length::Fixed(10.0)),
-                    // Install model 
+                    // Install model / 
                     widget::row!(
                         widget::text("Model to install (e.g. llama3.2:3b): "),
                         model_install,

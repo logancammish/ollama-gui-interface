@@ -1,40 +1,6 @@
 {
-  "began_logging": "2025-06-09T13:56:20.635677500+12:00",
-  "version": "0.2.0",
+  "began_logging": "2025-06-10T20:43:41.111562700+12:00",
+  "version": "0.2.2",
   "filtering": true,
-  "logs": [
-    {
-      "filtering": true,
-      "time": "2025-06-09T13:56:50.338608+12:00",
-      "prompt": "hi",
-      "response": [
-        "test",
-        ""
-      ],
-      "model": "llama3.2:3b",
-      "systemprompt": "You are a testing robot. You will respond to all prompts with the word 'test'."
-    },
-    {
-      "filtering": true,
-      "time": "2025-06-09T13:56:58.625029900+12:00",
-      "prompt": "hi",
-      "response": [
-        "test",
-        ""
-      ],
-      "model": "llama3.2:3b",
-      "systemprompt": "You are a testing robot. You will respond to all prompts with the word 'test'."
-    },
-    {
-      "filtering": true,
-      "time": "2025-06-09T13:56:59.684709400+12:00",
-      "prompt": "hi",
-      "response": [
-        "test",
-        ""
-      ],
-      "model": "llama3.2:3b",
-      "systemprompt": "You are a testing robot. You will respond to all prompts with the word 'test'."
-    }
-  ]
+  "logs": []
 }
