@@ -33,7 +33,7 @@ const VERSION_TICK: i32 = 5000; // The tick in which the version of the program 
 const MAX_TICK: i32 = 20000; // The maximum tick in which the ticks will reset
 const BOT_LIST_TICK: i32 = 1000; // The tick in which the Ollama bots list will be checked
 ///
-const APP_VERSION: &str = "0.2.2"; // The current version of the application
+const APP_VERSION: &str = "0.2.3"; // The current version of the application
 
 
 
@@ -52,7 +52,8 @@ enum Message {
     InstallationPrompt,
     ModelChange(String),
     InstallModel(String),
-    UpdateInstall(String)
+    UpdateInstall(String),
+    UpdateTemperature(f32)
 } 
 
 // log struct allows for easy JSON creation 
@@ -139,9 +140,11 @@ impl SystemPrompt {
 }
 
 // UserInformation saves certain important information about the program specific to the current user 
+#[derive(Clone)]
 struct UserInformation {
     model: Option<String>,
-    think: bool
+    think: bool,
+    temperature: f32
 }
 
 /// Channels
@@ -242,11 +245,9 @@ impl Program {
             return;
         }
         
-        let model = self.user_information.model.clone(); 
         let logging = self.app_state.logging.clone(); 
         let filtering = self.app_state.filtering.clone(); 
-        let thinking = self.user_information.think.clone();
-        println!("Thinking is set to: {}", thinking);
+        let user_info = self.user_information.clone();
         let channels = self.channels.clone();
         // create a new tokio runtime
         // this is done because the function is not async
@@ -256,13 +257,13 @@ impl Program {
 
             let system_prompt = system_prompt.unwrap(); 
             let ollama = Ollama::default();
-            let request = GenerationRequest::new(model.clone().unwrap(), prompt.clone())
-                .options(ModelOptions::default().temperature(0.6))
+            let request = GenerationRequest::new(user_info.model.clone().unwrap(), prompt.clone())
+                .options(ModelOptions::default().temperature(user_info.temperature / 10.0))
                 .system(system_prompt.clone());
             
             println!("System prompt: {}", system_prompt.clone());
 
-            let mut response = match ollama.generate_stream(request.think(thinking)).await {
+            let mut response = match ollama.generate_stream(request.think(user_info.think)).await {
                 Ok(stream) => stream,
                 Err(e) => {
                     eprintln!("Error generating response: {}", e);            
@@ -308,7 +309,7 @@ impl Program {
                 Channels::send_request_to_channel(Arc::clone(&channels.logging_channel), 
                     Log::create_with_current_time(
                         filtering,
-                        model,
+                        user_info.model,
                         final_response, 
                         Some(system_prompt),
                         prompt
@@ -406,6 +407,11 @@ impl Program {
                     ).unwrap()).expect("Unable to write to history.json");
                 }
 
+                Task::none()
+            }
+
+            Message::UpdateTemperature(n) => {
+                self.user_information.temperature = n;
                 Task::none()
             }
 
@@ -600,7 +606,8 @@ impl Default for Program {
             },
             user_information: UserInformation { 
                 model: None, 
-                think: false
+                think: false,
+                temperature: 7.0
             },
             response: Response { 
                 response_as_string: Arc::new(Mutex::new(String::new())), 

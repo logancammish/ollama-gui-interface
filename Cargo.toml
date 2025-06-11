@@ -1,6 +1,6 @@
 [package]
 name = "ollama-gui"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2024"
 
 [dependencies]
@@ -19,10 +19,8 @@ rustrict = "0.7.35"
 chrono = "0.4.41"
 image = "0.25.6"
 
-
 [build-dependencies]
 winresource = "0.1.22"
-
 
 [profile.release]
 opt-level = 2

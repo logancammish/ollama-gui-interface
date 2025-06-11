@@ -86,10 +86,20 @@ impl Program {
                         ).on_toggle(|_| Message::ToggleThinking),
                     ),
                     Space::with_height(Length::Fixed(5.0)),
-                    widget::pick_list(
-                        bots_list,
-                        self.user_information.model.clone(),
-                        Message::ModelChange,
+                    widget::row!(
+                        widget::pick_list(
+                            bots_list,
+                            self.user_information.model.clone(),
+                            Message::ModelChange,
+                        ),
+                        Space::with_width(Length::Fixed(200.0)),
+                        widget::text("Model temperature (output 'randomness'): "),
+                        Space::with_width(Length::Fixed(5.0)),
+                        widget::slider(
+                            0.0..=10.0, 
+                            self.user_information.temperature.clone(),
+                            Message::UpdateTemperature
+                        )
                     ),
                     // Choose sys prompt 
                     Space::with_height(Length::Fixed(10.0)),
