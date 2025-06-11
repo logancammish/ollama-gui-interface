@@ -30,6 +30,7 @@ impl Program {
             .on_input(|input| { Message::UpdateInstall(input) });
         let local_ollamastate =  self.app_state.ollama_state.lock().unwrap().clone();
 
+
                
         return container(
             widget::column![
@@ -63,6 +64,19 @@ impl Program {
                                 widget::text("To install Ollama, click "),
                                 widget::button("here.")
                                 .on_press(Message::InstallationPrompt)
+                            )
+                        } else {
+                            widget::row!()
+                        }
+                    },
+                    
+                    // Bot list prompt
+                    {
+                        if bots_list.clone().is_empty() {
+                            widget::row!( 
+                                widget::text("No bots were detected, you can find them "),
+                                widget::button("here.")
+                                .on_press(Message::ListPrompt)
                             )
                         } else {
                             widget::row!()

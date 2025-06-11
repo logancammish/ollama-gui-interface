@@ -41,6 +41,7 @@ const APP_VERSION: &str = "0.2.3"; // The current version of the application
 // message enum defined to send communications to the GUI logic
 #[derive(Debug, Clone)]
 enum Message {
+    ListPrompt,
     ToggleThinking,
     SystemPromptChange(String),
     Prompt(String),
@@ -450,6 +451,7 @@ impl Program {
                                         is_error: true
                                     }
                                 );
+                                bots_list.lock().unwrap().clear();
                                 println!("Error: {:?}", e);
                             }
                         }
@@ -534,6 +536,15 @@ impl Program {
             
             Message::InstallationPrompt => { 
                 if webbrowser::open("https://ollama.com/download").is_ok() {
+                    println!("Opened URL in default browser");
+                } else {
+                    eprintln!("Failed to open URL");
+                }
+                Task::none()
+            } 
+            
+            Message::ListPrompt => { 
+                if webbrowser::open("https://ollama.com/search").is_ok() {
                     println!("Opened URL in default browser");
                 } else {
                     eprintln!("Failed to open URL");
