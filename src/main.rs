@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Poll, Context};
+use std::fs;
 //external crate imports
 use chrono::Local;
 use futures::Stream;
@@ -19,7 +20,6 @@ use futures::stream::StreamExt;
 use webbrowser;
 use serde_json;
 use serde::Serialize;
-use std::fs;
 use rustrict::Censor;
 use image;
 //local file imports
@@ -32,6 +32,7 @@ mod gui;
 const VERSION_TICK: i32 = 5000; // The tick in which the version of the program will be checked 
 const MAX_TICK: i32 = 20000; // The maximum tick in which the ticks will reset
 const BOT_LIST_TICK: i32 = 1000; // The tick in which the Ollama bots list will be checked
+const TICK_MS: u64 = 200; // Tick rate
 ///
 const APP_VERSION: &str = "0.2.3"; // The current version of the application
 
@@ -55,6 +56,12 @@ enum Message {
     UpdateInstall(String),
     UpdateTemperature(f32)
 } 
+
+#[derive(Clone)]
+struct DebugMessage{ 
+    message: String, 
+    is_error: bool 
+}
 
 // log struct allows for easy JSON creation 
 #[derive(Serialize, Clone)]
@@ -122,7 +129,12 @@ impl SystemPrompt {
             Some(system_prompt) => system_prompt,
             None => {
                 println!("Error getting system prompt");
-                Channels::send_request_to_channel(Arc::clone(&program.channels.debug_channel), "Could not get system prompt, is it selected?".to_string());
+                Channels::send_request_to_channel(Arc::clone(&program.channels.debug_channel), 
+                    DebugMessage {
+                         message: "Could not get system prompt, is it selected?".to_string(), 
+                         is_error: true 
+                    }
+                );
                 Channels::send_request_to_channel(Arc::clone(&program.channels.debounce_channel), false);
                 return None; 
             }
@@ -132,7 +144,12 @@ impl SystemPrompt {
             return system_prompt.system_prompts_as_hashmap.get(&system_prompt_as_string).cloned();
         } else { 
             println!("system prompt is None");
-            Channels::send_request_to_channel(Arc::clone(&program.channels.debug_channel), "Could not get system prompt, is it selected?".to_string());
+            Channels::send_request_to_channel(Arc::clone(&program.channels.debug_channel), 
+            DebugMessage {
+                         message: "Could not get system prompt, is it selected?".to_string(), 
+                         is_error: true 
+                    }
+            );
             Channels::send_request_to_channel(Arc::clone(&program.channels.debounce_channel), false);
             return None; 
         }
@@ -158,7 +175,7 @@ struct UserInformation {
 #[derive(Clone)]
 struct Channels {
     markdown_channel_reciever: crossbeam_channel::Receiver<Vec<markdown::Item>>,
-    debug_channel: Arc<Mutex<(std::sync::mpsc::Sender<String>, std::sync::mpsc::Receiver<String>)>>,
+    debug_channel: Arc<Mutex<(std::sync::mpsc::Sender<DebugMessage>, std::sync::mpsc::Receiver<DebugMessage>)>>,
     debounce_channel: Arc<Mutex<(std::sync::mpsc::Sender<bool>, std::sync::mpsc::Receiver<bool>)>>,
     logging_channel: Arc<Mutex<(std::sync::mpsc::Sender<Log>, std::sync::mpsc::Receiver<Log>)>>,
 }
@@ -196,7 +213,7 @@ struct Program {
     is_processing: bool,
     current_tick: i32,
     installing_model: String,
-    debug_message: String,
+    debug_message: DebugMessage,
     system_prompt: SystemPrompt,
     app_state: AppState, 
     channels: Channels, 
@@ -216,7 +233,12 @@ impl Program {
         // invalid case handler
         if self.user_information.model == None {
             Channels::send_request_to_channel(Arc::clone(&self.channels.debounce_channel), false);
-            Channels::send_request_to_channel(Arc::clone(&self.channels.debug_channel), "Model selected is invalid, have you selected a model?".to_string());
+            Channels::send_request_to_channel(Arc::clone(&self.channels.debug_channel), 
+        DebugMessage {
+                    message: "Model selected is invalid, have you selected a model?".to_string(), 
+                    is_error: true 
+                }
+            );
             println!("Model is None");
             return; 
         }
@@ -227,21 +249,52 @@ impl Program {
         self.channels.markdown_channel_reciever = markdown_receiver;
         let response_arc = Arc::clone(&self.response.response_as_string);
         let (tx, rx) = std::sync::mpsc::channel::<GenerationResponse>();
+        let channels = self.channels.clone();
 
         // create a new thread to prevent blocking
         std::thread::spawn(move || {
             for token in rx {
-                let mut resp = response_arc.lock().unwrap();
+                let mut resp = match response_arc.lock() {
+                    Ok(resp) => {
+                        resp
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to get response: {}", e);
+                        Channels::send_request_to_channel(Arc::clone(&channels.debug_channel), 
+                            DebugMessage{
+                                message: "Failed to get response [responsearc failed]".to_string(),
+                                is_error: true
+                            }
+                        );
+                        return 
+                    }
+                };
                 resp.push_str(&token.response);
                 let md = markdown::parse(&resp).collect();
-                markdown_sender.send(md).unwrap();
+                match markdown_sender.send(md) {
+                    Ok(_) => {  }
+                    Err(e) => {
+                        eprintln!("Failed to send markdown response: {}", e);
+                        Channels::send_request_to_channel(Arc::clone(&channels.debug_channel), 
+                            DebugMessage{
+                                message: "Failed to create markdown response [markdown_sender.send failed]".to_string(),
+                                is_error: true
+                            }
+                        );
+                    }
+                };
             }
         });
 
         let system_prompt: Option<String> = SystemPrompt::get_current(&self);
-        if system_prompt.is_none() { 
-            Channels::send_request_to_channel(Arc::clone(&self.channels.debug_channel), "Could not get system prompt, is it selected?".to_string());
-            Channels::send_request_to_channel(Arc::clone(&self.channels.debounce_channel), false);
+        if system_prompt.is_none() {
+            Channels::send_request_to_channel(Arc::clone(&self.channels.debug_channel), 
+                DebugMessage{
+                    message: "Could not get system prompt, is it selected?".to_string(),
+                    is_error: true
+                }
+            );
+            Channels::send_request_to_channel(Arc::clone(&self.channels.debounce_channel), false); 
             return;
         }
         
@@ -255,7 +308,7 @@ impl Program {
         self.runtime.spawn(async move {           
             println!("Received prompt: {}", prompt.clone());
 
-            let system_prompt = system_prompt.unwrap(); 
+            let system_prompt = system_prompt.unwrap();
             let ollama = Ollama::default();
             let request = GenerationRequest::new(user_info.model.clone().unwrap(), prompt.clone())
                 .options(ModelOptions::default().temperature(user_info.temperature / 10.0))
@@ -267,8 +320,14 @@ impl Program {
                 Ok(stream) => stream,
                 Err(e) => {
                     eprintln!("Error generating response: {}", e);            
-                    Channels::send_request_to_channel(Arc::clone(&channels.debug_channel), "Error getting ollama response (have you enabled thinking on a bot which does not allow this feature?)".to_string());
-                    Channels::send_request_to_channel(Arc::clone(&channels.debounce_channel), false);                    return 
+                    Channels::send_request_to_channel(Arc::clone(&channels.debug_channel), 
+                        DebugMessage{
+                            message: "Error getting ollama response (have you enabled thinking on a bot which does not allow this feature?)".to_string(),
+                            is_error: true
+                        }
+                    );
+                    Channels::send_request_to_channel(Arc::clone(&channels.debounce_channel), false);     
+                    return   
                 }
             };
             
@@ -333,7 +392,9 @@ impl Program {
             // - check the currently installed bots
             // - handle mpsc channels
             Message::Tick => { 
+             //   println!("Tick: {}", self.current_tick);
                 if self.current_tick > MAX_TICK {
+                    println!("Resetting current tick");
                     self.current_tick = 0;
                 }
                 self.current_tick += 1; 
@@ -383,7 +444,12 @@ impl Program {
                                 });
                             }
                             Err(e) => {
-                                Channels::send_request_to_channel(Arc::clone(&channels.debug_channel), "Error occured while listing bots".to_string());
+                                Channels::send_request_to_channel(Arc::clone(&channels.debug_channel),
+                                    DebugMessage{
+                                        message: "Error occured while listing bots".to_string(),
+                                        is_error: true
+                                    }
+                                );
                                 println!("Error: {:?}", e);
                             }
                         }
@@ -426,7 +492,12 @@ impl Program {
             }
 
             Message::InstallModel(model_install) => {
-                Channels::send_request_to_channel(Arc::clone(&self.channels.debug_channel), format!("Installing model... {}", model_install).to_string());
+                Channels::send_request_to_channel(Arc::clone(&self.channels.debug_channel), 
+                    DebugMessage{
+                        message: format!("Installing model... {}", model_install).to_string(),
+                        is_error: false 
+                    }
+                );
 
                 let ollama = Ollama::default();
                 let channels = self.channels.clone();
@@ -435,11 +506,21 @@ impl Program {
                     match ollama.pull_model(model_install.clone(), false).await {
                         Ok(outcome) => {
                             println!("Model {} installed successfully: {}", model_install, outcome.message);     
-                            Channels::send_request_to_channel(Arc::clone(&channels.debug_channel), format!("Installed model {}: {}", model_install, outcome.message));
+                            Channels::send_request_to_channel(Arc::clone(&channels.debug_channel), 
+                                    DebugMessage{ 
+                                        message: format!("Installed model {}: {}", model_install, outcome.message),
+                                        is_error: false
+                                    }
+                                );
                         }  
                         Err(outcome) => {
                             println!("Failed to install model {}: {:?}", model_install, outcome);
-                            Channels::send_request_to_channel(Arc::clone(&channels.debug_channel), format!("Failed to install model {}", model_install));
+                            Channels::send_request_to_channel(Arc::clone(&channels.debug_channel), 
+                                DebugMessage { 
+                                    message: format!("Failed to install model {}", model_install),
+                                    is_error: true
+                                }
+                            );
                         }
                     };
                 });
@@ -522,7 +603,7 @@ impl Program {
 
             fn stream(self: Box<Self>, _: futures::stream::BoxStream<'static, E>) -> futures::stream::BoxStream<'static, Self::Output> {
                 futures::stream::unfold((), |_| async {
-                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(TICK_MS)).await;
                     Some((Message::Tick, ()))
                 }).boxed()
             }
@@ -592,7 +673,7 @@ impl Default for Program {
             is_processing: false,
             current_tick: 0,
             installing_model: String::new(),
-            debug_message: String::new(),
+            debug_message: DebugMessage { message: "".to_string(), is_error: false },
             system_prompt: SystemPrompt { 
                 system_prompts_as_hashmap: system_prompts_as_prompt, 
                 system_prompts_as_vec: Arc::new(Mutex::new(system_prompts)), 
@@ -600,7 +681,7 @@ impl Default for Program {
             },
             channels: Channels { 
                 markdown_channel_reciever: crossbeam_channel::unbounded().1, 
-                debug_channel: Arc::new(Mutex::new(std::sync::mpsc::channel::<String>())), 
+                debug_channel: Arc::new(Mutex::new(std::sync::mpsc::channel::<DebugMessage>())), 
                 debounce_channel: Arc::new(Mutex::new(std::sync::mpsc::channel::<bool>())), 
                 logging_channel:  Arc::new(Mutex::new(std::sync::mpsc::channel::<Log>()))
             },

@@ -118,7 +118,12 @@ impl Program {
                     ),
                     Space::with_height(Length::Fixed(10.0)),
                     //Debug message
-                    widget::text(self.debug_message.clone()).color(Color::from_rgb(0.8, 0.2, 0.2)),
+                    widget::text(self.debug_message.clone().message).color(
+                        if self.debug_message.clone().is_error {
+                            Color::from_rgb(0.8, 0.2, 0.2)
+                        } else { 
+                            Color::from_rgb(0.1,0.8,0.1)
+                        }),
 
                     
                 ]
