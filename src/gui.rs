@@ -41,7 +41,7 @@ impl Program {
                             markdown::Settings::default(),
                             markdown::Style::from_palette(Theme::Dracula.palette())
                         ).map(|_| Message::None)
-                    ).height(Length::Fixed(320.0)),
+                    ).height(Length::Fixed(300.0)),
                     // Copy button
                     widget::row!(
                         widget::button("Copy")
@@ -105,7 +105,7 @@ impl Program {
                             bots_list,
                             self.user_information.model.clone(),
                             Message::ModelChange,
-                        ),
+                        ).width(Length::Fixed(175.0)),
                         Space::with_width(Length::Fixed(200.0)),
                         widget::text("Model temperature (output 'randomness'): "),
                         Space::with_width(Length::Fixed(5.0)),

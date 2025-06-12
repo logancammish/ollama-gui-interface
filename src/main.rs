@@ -770,7 +770,7 @@ pub async fn main() -> iced::Result {
     
     // begins the application
     iced::application("Ollama GUI Interface", Program::update, Program::view)
-        .window_size(Size::new(700.0, 720.0))
+        .window_size(Size::new(700.0, 785.0))
         .subscription(Program::subscription)
         .theme(move |_| mode.clone())
         .window(window_settings)
