@@ -19,11 +19,12 @@ use iced_native::subscription::Recipe;
 use futures::stream::StreamExt;
 use webbrowser;
 use serde_json;
-use serde::Serialize;
 use rustrict::Censor;
 use image;
 //local file imports
 mod gui; 
+mod app;
+use crate::app::{UserInformation, Channels, AppState, DebugMessage, SystemPrompt, Response, Prompt, Log, History};
 
 /// Tick points:
 /// Each tick occurs every 1ms; so these will perform certain actions 
@@ -58,154 +59,6 @@ enum Message {
     UpdateTemperature(f32)
 } 
 
-#[derive(Clone)]
-struct DebugMessage{ 
-    message: String, 
-    is_error: bool 
-}
-
-// log struct allows for easy JSON creation 
-#[derive(Serialize, Clone)]
-struct Log { 
-    filtering: bool,
-    time: String, 
-    prompt: String, 
-    response: Vec<String>, 
-    model: Option<String>, 
-    systemprompt: Option<String>
-}
-
-impl Log { 
-    // this function will create a new Log with the information specified on the current time
-    fn create_with_current_time(filtering: bool, model: Option<String>, response: Vec<String>, systemprompt: Option<String>, prompt: String) -> Self {
-        return Log { 
-            filtering: filtering, 
-            time: String::from(Local::now().to_rfc3339()), 
-            prompt: prompt, 
-            response: response, 
-            model: model, 
-            systemprompt: systemprompt
-        }
-    }
-
-}
-
-// History struct allows for easy JSON creation 
-#[derive(Serialize, Clone)]
-struct History { 
-    began_logging: String, 
-    version: String, 
-    filtering: bool, 
-    logs: Vec<Log>
-}
-impl History { 
-    // will push a Log to the History.logs
-    fn push_log(&mut self, log: Log) {
-        self.logs.push(log);
-    }
-}
-
-// AppState keeps information on certain important information
-struct AppState { 
-    filtering: bool, 
-    logs: History, 
-    logging: bool, 
-    ollama_state: Arc<Mutex<String>>,
-    bots_list: Arc<Mutex<Vec<String>>>,
-}
-
-// SystemPrompt saves the current system prompts and the currently selected system prompt
-#[derive(Clone)]
-struct SystemPrompt {
-    system_prompts_as_hashmap: HashMap<String, String>,
-    system_prompts_as_vec: Arc<Mutex<Vec<String>>>,
-    system_prompt: Option<String>,
-}
-
-impl SystemPrompt { 
-    // gets the currently selected system prompt
-    fn get_current(program: &Program) -> Option<String> {
-        let system_prompt: SystemPrompt = program.system_prompt.clone(); 
-        let system_prompt_as_string: String = match system_prompt.system_prompt { 
-            Some(system_prompt) => system_prompt,
-            None => {
-                println!("Error getting system prompt");
-                Channels::send_request_to_channel(Arc::clone(&program.channels.debug_channel), 
-                    DebugMessage {
-                         message: "Could not get system prompt, is it selected?".to_string(), 
-                         is_error: true 
-                    }
-                );
-                Channels::send_request_to_channel(Arc::clone(&program.channels.debounce_channel), false);
-                return None; 
-            }
-        }; 
-
-        if system_prompt.system_prompts_as_hashmap.get(&system_prompt_as_string).is_some() {
-            return system_prompt.system_prompts_as_hashmap.get(&system_prompt_as_string).cloned();
-        } else { 
-            println!("system prompt is None");
-            Channels::send_request_to_channel(Arc::clone(&program.channels.debug_channel), 
-            DebugMessage {
-                         message: "Could not get system prompt, is it selected?".to_string(), 
-                         is_error: true 
-                    }
-            );
-            Channels::send_request_to_channel(Arc::clone(&program.channels.debounce_channel), false);
-            return None; 
-        }
-    }
-}
-
-// UserInformation saves certain important information about the program specific to the current user 
-#[derive(Clone)]
-struct UserInformation {
-    model: Option<String>,
-    think: bool,
-    temperature: f32
-}
-
-/// Channels
-/// These channels are either crossbeam or mpsc channels designed for easy communication 
-/// between runtimes. 
-/// markdown_channel_reciever: Crossbeam channel reciever for markdown content to the GUI
-/// debug_channel: mpsc channel for sending debug information to GUI
-/// debounce_channel: mpsc channel for preventing certain things from occuring at the same time
-/// logging_channel: mpsc channel for communication with the logging feature of the program
-
-#[derive(Clone)]
-struct Channels {
-    markdown_channel_reciever: crossbeam_channel::Receiver<Vec<markdown::Item>>,
-    debug_channel: Arc<Mutex<(std::sync::mpsc::Sender<DebugMessage>, std::sync::mpsc::Receiver<DebugMessage>)>>,
-    debounce_channel: Arc<Mutex<(std::sync::mpsc::Sender<bool>, std::sync::mpsc::Receiver<bool>)>>,
-    logging_channel: Arc<Mutex<(std::sync::mpsc::Sender<Log>, std::sync::mpsc::Receiver<Log>)>>,
-}
-
-impl Channels {
-    fn send_request_to_channel<T: Send + Clone> (channel: Arc<Mutex<(std::sync::mpsc::Sender<T>, std::sync::mpsc::Receiver<T>)>>, message: T) {        
-        match channel.lock() {
-            Ok(channel) => {
-                if let Err(e) = channel.0.send(message) {
-                    eprintln!("Failed to send: {}", e);
-                }
-            }
-            Err(e) => {                
-                eprintln!("Failed to send: {}", e);
-            }
-        }
-    }
-}
-// Response saves the current response as both parsed markdown and a string
-struct Response { 
-    response_as_string: Arc<Mutex<String>>,
-    parsed_markdown: Vec<markdown::Item>,
-}
-
-// Prompt saves the current prompt and time sent 
-struct Prompt { 
-    prompt_time_sent: std::time::Instant,
-    prompt: String
-}
 
 // program struct, stores the current program state
 // e.g., the current prompt, debug message, etc.
@@ -684,7 +537,10 @@ impl Default for Program {
             is_processing: false,
             current_tick: 0,
             installing_model: String::new(),
-            debug_message: DebugMessage { message: "".to_string(), is_error: false },
+            debug_message: DebugMessage { 
+                message: "".to_string(), 
+                is_error: false 
+            },
             system_prompt: SystemPrompt { 
                 system_prompts_as_hashmap: system_prompts_as_prompt, 
                 system_prompts_as_vec: Arc::new(Mutex::new(system_prompts)), 
