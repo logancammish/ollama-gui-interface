@@ -35,7 +35,7 @@ const MAX_TICK: i32 = 20000; // The maximum tick in which the ticks will reset
 const BOT_LIST_TICK: i32 = 1000; // The tick in which the Ollama bots list will be checked
 const TICK_MS: u64 = 200; // Tick rate
 ///
-const APP_VERSION: &str = "0.2.3"; // The current version of the application
+const APP_VERSION: &str = "0.2.4"; // The current version of the application
 
 
 
@@ -101,14 +101,13 @@ impl Program {
 
         let (markdown_sender, markdown_receiver) = crossbeam_channel::unbounded();
         self.channels.markdown_channel_reciever = markdown_receiver;
-        let response_arc = Arc::clone(&self.response.response_as_string);
+        let response_arc: Arc<Mutex<String>> = Arc::clone(&self.response.response_as_string);
         let (tx, rx) = std::sync::mpsc::channel::<GenerationResponse>();
-        let channels = self.channels.clone();
-
+        let channels: Channels = self.channels.clone();
         // create a new thread to prevent blocking
         std::thread::spawn(move || {
             for token in rx {
-                let mut resp = match response_arc.lock() {
+                let mut resp: std::sync::MutexGuard<'_, String> = match response_arc.lock() {
                     Ok(resp) => {
                         resp
                     }
@@ -162,15 +161,15 @@ impl Program {
         self.runtime.spawn(async move {           
             println!("Received prompt: {}", prompt.clone());
 
-            let system_prompt = system_prompt.unwrap();
-            let ollama = Ollama::default();
-            let request = GenerationRequest::new(user_info.model.clone().unwrap(), prompt.clone())
+            let system_prompt: String = system_prompt.unwrap();
+            let ollama: Ollama = Ollama::default();
+            let request: GenerationRequest<'_> = GenerationRequest::new(user_info.model.clone().unwrap(), prompt.clone())
                 .options(ModelOptions::default().temperature(user_info.temperature / 10.0))
                 .system(system_prompt.clone());
             
             println!("System prompt: {}", system_prompt.clone());
 
-            let mut response = match ollama.generate_stream(request.think(user_info.think)).await {
+            let mut response: Pin<Box<dyn Stream<Item = Result<Vec<GenerationResponse>, ollama_rs::error::OllamaError>> + Send + 'static>> = match ollama.generate_stream(request.think(user_info.think)).await {
                 Ok(stream) => stream,
                 Err(e) => {
                     eprintln!("Error generating response: {}", e);            
@@ -193,7 +192,7 @@ impl Program {
                     Ok(responses) => {
                         for token in responses {
                             print!("{}", token.response);
-                            let filtered_token = if filtering {
+                            let filtered_token: GenerationResponse = if filtering {
                                 GenerationResponse{ 
                                     response: Censor::from_str(token.response.as_str()).censor(),
                                     ..token
@@ -435,6 +434,8 @@ impl Program {
                     self.response.parsed_markdown = vec![];
                     *self.response.response_as_string.lock().unwrap() = String::new(); 
                     Self::prompt(self, prompt.clone());
+                    self.response.parsed_markdown = markdown::parse("Waiting for bot...").collect();
+
                 }
                 Task::none()
             }
@@ -494,13 +495,26 @@ impl Program {
 
 impl Default for Program {
     fn default() -> Self {
+        let mut json_error: String = String::new();
         // Reading defaultprompts.json 
         // Ensures that the system prompts are loaded 
-        // and visible to user on start-up
-        let data_prompts = fs::read_to_string("./config/defaultprompts.json")
-            .expect("Unable to read file");
-        let system_prompts_as_prompt: HashMap<String, String> = serde_json::from_str(&data_prompts)
-            .expect("JSON was not well-formatted");
+        // and visible to user on start-up 
+        let data_prompts: String = match fs::read_to_string("./config/defaultprompts.json") {
+            Ok(dp) => dp, 
+            Err(_e) => {
+                println!("An error occured reading default prompts"); 
+                json_error.push_str("| Failed to read: ./config/defaultprompts.json");
+                "[]".to_string()
+            }
+        };
+        let system_prompts_as_prompt: HashMap<String, String> = match serde_json::from_str(&data_prompts) {
+            Ok(sp) => sp, 
+            Err(_e) => {
+                println!("An error occured reading default prompts (bad format)"); 
+                json_error.push_str("| Failed to read: ./config/defaultprompts.json (bad formatting)");
+                HashMap::from([(String::new(), String::new())])
+            }
+        };
         let mut system_prompts: Vec<String> = Vec::new();
         system_prompts_as_prompt.iter().for_each(|prompt| {
             system_prompts.push(prompt.0.clone());
@@ -510,10 +524,25 @@ impl Default for Program {
 
         // Reading settings.json
         // Ensures that users settings are loaded 
-        let settings = fs::read_to_string("./config/settings.json")
-            .expect("Unable to read settings file");
-        let settings_hmap: HashMap<String, bool> = serde_json::from_str(&settings)
-            .expect("JSON was not well-formatted");
+        let settings = match fs::read_to_string("./config/settings.json") {
+            Ok(dp) => dp, 
+            Err(_e) => {
+                println!("An error occured reading settings"); 
+                json_error.push_str("| Failed to read: ./config/settings.json");
+                "[]".to_string()
+            }
+        };
+        let settings_hmap: HashMap<String, bool> = match serde_json::from_str(&settings) {
+            Ok(sp) => sp, 
+            Err(_e) => {
+                println!("An error occured reading settings (bad format)"); 
+                json_error.push_str("| Failed to read: ./config/settings.json (bad formatting. reset to default)");
+                HashMap::from([
+                    ("filtering".to_string(), false),
+                    ("logging".to_string(), false)
+                ])
+            }
+        };
         let filtering = *settings_hmap.get("filtering")
             .unwrap_or(&true);
         let logging = *settings_hmap.get("logging")
@@ -524,13 +553,19 @@ impl Default for Program {
         let history: History = History { 
             began_logging: Local::now().to_rfc3339(),
             version: APP_VERSION.to_string(),
-            filtering: true,
+            filtering: filtering.clone(),
             logs: vec![]
         };
 
-        fs::write("./output/history.json", serde_json::to_string_pretty(
+        match fs::write("./output/history.json", serde_json::to_string_pretty(
             &history
-        ).unwrap()).expect("Unable to write to history.json");
+        ).unwrap()) {
+            Ok(_) => {},
+            Err(_) => {
+                eprintln!("An error writing to history.json");
+                json_error.push_str("Unable to write to history.json");
+            }
+        };
 
         Self { 
             runtime: Runtime::new().expect("Failed to create Tokio runtime"), 
@@ -538,8 +573,12 @@ impl Default for Program {
             current_tick: 0,
             installing_model: String::new(),
             debug_message: DebugMessage { 
-                message: "".to_string(), 
-                is_error: false 
+                message: json_error.clone(), 
+                is_error: if json_error != String::new() {
+                    true
+                } else { 
+                    false
+                }
             },
             system_prompt: SystemPrompt { 
                 system_prompts_as_hashmap: system_prompts_as_prompt, 
@@ -610,11 +649,23 @@ pub async fn main() -> iced::Result {
         ..iced::window::Settings::default()
     };
 
-    // Reading settings.json
-    let settings = fs::read_to_string("./config/settings.json")
-            .expect("Unable to read settings file");
-    let settings_hmap: HashMap<String, bool> = serde_json::from_str(&settings)
-            .expect("JSON was not well-formatted");
+    // Reading settings.json  
+    let settings = match fs::read_to_string("./config/settings.json") {
+        Ok(dp) => dp, 
+        Err(_e) => {
+            println!("An error occured reading settings"); 
+            "[]".to_string()
+        }
+    };
+    let settings_hmap: HashMap<String, bool> = match serde_json::from_str(&settings) {
+        Ok(sp) => sp, 
+        Err(_e) => {
+            println!("An error occured reading settings (bad format)"); 
+            HashMap::from([
+                ("dark_mode".to_string(), false),
+            ])
+        }
+    };
     let dark_mode = *settings_hmap.get("dark_mode")
         .unwrap_or(&false);
     
