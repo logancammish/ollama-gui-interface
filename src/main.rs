@@ -322,9 +322,18 @@ impl Program {
                 if let Ok(log) = self.channels.logging_channel.lock().unwrap().1.try_recv() {
                     self.app_state.logs.push_log(log);
 
-                    fs::write("./output/history.json", serde_json::to_string_pretty(
-                        &self.app_state.logs
-                    ).unwrap()).expect("Unable to write to history.json");
+                    match fs::write("./output/history.json", serde_json::to_string_pretty(
+                        &history
+                    ).unwrap()) {
+                        Ok(_) => {},
+                        Err(_) => {
+                            eprintln!("An error writing to history.json");
+                            self.debug_message = DebugMessage {
+                                message: "Failed to write to history.json".to_string(), 
+                                is_error: true
+                            };
+                        }
+                    };
                 }
 
                 Task::none()
