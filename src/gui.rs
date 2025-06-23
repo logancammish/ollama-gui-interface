@@ -41,7 +41,7 @@ impl Program {
                             markdown::Settings::default(),
                             markdown::Style::from_palette(Theme::Dracula.palette())
                         ).map(|_| Message::None)
-                    ).height(Length::Fixed(300.0)),
+                    ).height(Length::Fill),
                     // Copy button
                     widget::row!(
                         widget::button("Copy")
