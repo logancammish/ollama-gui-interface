@@ -35,7 +35,7 @@ const MAX_TICK: i32 = 20000; // The maximum tick in which the ticks will reset
 const BOT_LIST_TICK: i32 = 1000; // The tick in which the Ollama bots list will be checked
 const TICK_MS: u64 = 200; // Tick rate
 ///
-const APP_VERSION: &str = "0.2.4"; // The current version of the application
+const APP_VERSION: &str = "0.2.5"; // The current version of the application
 
 
 
@@ -685,7 +685,7 @@ pub async fn main() -> iced::Result {
     };
     
     // begins the application
-    iced::application("Ollama GUI Interface", Program::update, Program::view)
+    iced::application(format!("Ollama GUI Interface (v{})", APP_VERSION) , Program::update, Program::view)
         .window_size(Size::new(700.0, 785.0))
         .subscription(Program::subscription)
         .theme(move |_| mode.clone())
