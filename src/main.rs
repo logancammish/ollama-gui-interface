@@ -323,7 +323,7 @@ impl Program {
                     self.app_state.logs.push_log(log);
 
                     match fs::write("./output/history.json", serde_json::to_string_pretty(
-                        &history
+                        &self.app_state.logs
                     ).unwrap()) {
                         Ok(_) => {},
                         Err(_) => {
