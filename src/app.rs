@@ -111,7 +111,8 @@ impl SystemPrompt {
 pub struct UserInformation {
     pub model: Option<String>,
     pub think: bool,
-    pub temperature: f32
+    pub temperature: f32,
+    pub text_size: f32,
 }
 
 /// Channels

@@ -22,6 +22,7 @@ impl Program {
                     widget::button("I understand").on_press(Message::ToggleInfoPopup),
             ]).padding(10).into();
         } else { 
+            let user_information = self.user_information.clone();
             let bots_list = self.app_state.bots_list.lock().unwrap().clone();
             let prompts_list = self.system_prompt.system_prompts_as_vec.lock().unwrap().clone();
 
@@ -51,7 +52,10 @@ impl Program {
                         widget::scrollable( 
                             markdown::view(
                                 &self.response.parsed_markdown,
-                                markdown::Settings::default(),
+                                markdown::Settings { 
+                                    text_size: iced::Pixels(user_information.text_size),
+                                    ..markdown::Settings::default()
+                                },
                                 markdown::Style::from_palette(Theme::Dracula.palette())
                             ).map(|_| Message::None)
                         ).height(Length::Fill),
@@ -132,10 +136,20 @@ impl Program {
                         Space::with_height(Length::Fixed(10.0)),
                         widget::text("Select system prompt:"),
                         Space::with_height(Length::Fixed(5.0)),
-                        widget::pick_list(
-                            prompts_list,
-                            self.system_prompt.system_prompt.clone(),
-                            Message::SystemPromptChange,
+                        widget::row!( 
+                            widget::pick_list(
+                                prompts_list,
+                                self.system_prompt.system_prompt.clone(),
+                                Message::SystemPromptChange,
+                            ),     
+                            Space::with_width(Length::Fixed(138.0)),
+                            widget::text("Text size: "),
+                            Space::with_width(Length::Fixed(5.0)),
+                            widget::slider(
+                                1.0..=40.0, 
+                                self.user_information.text_size.clone(),
+                                Message::UpdateTextSize
+                            ),
                         ), 
                         Space::with_height(Length::Fixed(10.0)),
                         // Install model / 

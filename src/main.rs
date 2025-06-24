@@ -52,6 +52,7 @@ enum Message {
     KeyReleased(keyboard::Key),
     Tick,
     CopyPressed(String),
+    UpdateTextSize(f32),
     InstallationPrompt,
     ModelChange(String),
     InstallModel(String),
@@ -340,6 +341,11 @@ impl Program {
                 Task::none()
             }
 
+            Message::UpdateTextSize(n) => {
+                self.user_information.text_size = n;
+                Task::none()
+            }
+
             Message::ToggleInfoPopup => {
                 self.app_state.show_info_popup = !self.app_state.show_info_popup;
                 Task::none()
@@ -610,7 +616,8 @@ impl Default for Program {
             user_information: UserInformation { 
                 model: None, 
                 think: false,
-                temperature: 7.0
+                temperature: 7.0,
+                text_size: 24.0
             },
             response: Response { 
                 response_as_string: Arc::new(Mutex::new(String::new())), 
