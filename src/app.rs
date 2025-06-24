@@ -60,6 +60,7 @@ pub struct AppState {
     pub logging: bool, 
     pub ollama_state: Arc<Mutex<String>>,
     pub bots_list: Arc<Mutex<Vec<String>>>,
+    pub show_info_popup: bool,
 }
 
 // SystemPrompt saves the current system prompts and the currently selected system prompt

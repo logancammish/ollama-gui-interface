@@ -56,7 +56,8 @@ enum Message {
     ModelChange(String),
     InstallModel(String),
     UpdateInstall(String),
-    UpdateTemperature(f32)
+    UpdateTemperature(f32),
+    ToggleInfoPopup
 } 
 
 
@@ -339,6 +340,11 @@ impl Program {
                 Task::none()
             }
 
+            Message::ToggleInfoPopup => {
+                self.app_state.show_info_popup = !self.app_state.show_info_popup;
+                Task::none()
+            }
+
             Message::UpdateTemperature(n) => {
                 self.user_information.temperature = n;
                 Task::none()
@@ -462,7 +468,7 @@ impl Program {
 
     // display the GUI
     fn view(&self) -> Element<Message> {
-        Self::get_ui_information(self).into()
+        Self::get_ui_information(self, self.app_state.show_info_popup).into()
     }
 
     // sets up the Tick and keypressed events
@@ -556,7 +562,8 @@ impl Default for Program {
             .unwrap_or(&true);
         let logging = *settings_hmap.get("logging")
             .unwrap_or(&false);
-        println!("Logging is set to: {}", logging);
+        let info_popup = *settings_hmap.get("info_popup")
+            .unwrap_or(&false);
 
         // Writing to history.json for the first time
         let history: History = History { 
@@ -615,6 +622,7 @@ impl Default for Program {
             },
             app_state: AppState { 
                 filtering: filtering, 
+                show_info_popup: info_popup,
                 logs: history, 
                 logging: logging, 
                 ollama_state: Arc::new(Mutex::new("Offline".to_string())), 
