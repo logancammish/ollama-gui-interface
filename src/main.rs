@@ -250,8 +250,8 @@ impl Program {
                     .unwrap()
                     .generate_and_push(prompt, final_response.join(""));
             }
-            //println!("{:?}", user_info.chat_history);
         });
+        self.prompt.prompt = String::new();
     }
 
     // update function which updates occurding to the current subscription,
