@@ -24,7 +24,7 @@ use image;
 //local file imports
 mod gui; 
 mod app;
-use crate::app::{UserInformation, Channels, AppState, DebugMessage, SystemPrompt, Response, Prompt, Log, History};
+use crate::app::{AppState, Channels, CurrentChat, DebugMessage, History, Log, Prompt, Response, SystemPrompt, UserInformation};
 
 /// Tick points:
 /// Each tick occurs every 1ms; so these will perform certain actions 
@@ -58,7 +58,9 @@ enum Message {
     InstallModel(String),
     UpdateInstall(String),
     UpdateTemperature(f32),
-    ToggleInfoPopup
+    ToggleInfoPopup,
+    ToggleChatHistory,
+    WipeChatHistory
 } 
 
 
@@ -157,6 +159,7 @@ impl Program {
         let filtering = self.app_state.filtering.clone(); 
         let user_info = self.user_information.clone();
         let channels = self.channels.clone();
+        
         // create a new tokio runtime
         // this is done because the function is not async
         // but async programming must be done for the REST API calls
@@ -165,7 +168,17 @@ impl Program {
 
             let system_prompt: String = system_prompt.unwrap();
             let ollama: Ollama = Ollama::default();
-            let request: GenerationRequest<'_> = GenerationRequest::new(user_info.model.clone().unwrap(), prompt.clone())
+            let to_send_prompt: String = if user_info.current_chat_history_enabled {
+                format!("The following is a conversation between an AI language model and a User. You are the AI language model:
+                    {}
+                    [END CONVERSATION CONTEXT]
+                    Now, the user is sending another message: {}
+                    Respond: 
+                    ", user_info.chat_history.lock().unwrap().unravel(), prompt.clone())
+            } else {
+                prompt.clone()
+            };
+            let request: GenerationRequest<'_> = GenerationRequest::new(user_info.model.clone().unwrap(), to_send_prompt)
                 .options(ModelOptions::default().temperature(user_info.temperature / 10.0))
                 .system(system_prompt.clone());
             
@@ -219,17 +232,25 @@ impl Program {
             Channels::send_request_to_channel(Arc::clone(&channels.debounce_channel), false);
 
             //logs the information 
-            if logging == true { 
+            if logging { 
                 Channels::send_request_to_channel(Arc::clone(&channels.logging_channel), 
                     Log::create_with_current_time(
                         filtering,
                         user_info.model,
-                        final_response, 
+                        final_response.clone(), 
                         Some(system_prompt),
-                        prompt
+                        prompt.clone()
                     )
                 );
             } 
+
+            if user_info.current_chat_history_enabled { 
+                user_info.chat_history
+                    .lock()
+                    .unwrap()
+                    .generate_and_push(prompt, final_response.join(""));
+            }
+            //println!("{:?}", user_info.chat_history);
         });
     }
 
@@ -247,6 +268,8 @@ impl Program {
             // - check the currently installed bots
             // - handle mpsc channels
             Message::Tick => { 
+                
+                //println!("{:?}", self.user_information.chat_history);
              //   println!("Tick: {}", self.current_tick);
                 if self.current_tick > MAX_TICK {
                     println!("Resetting current tick");
@@ -338,6 +361,20 @@ impl Program {
                     };
                 }
 
+                Task::none()
+            }
+
+            Message::ToggleChatHistory => {
+                self.user_information.current_chat_history_enabled = !self.user_information.current_chat_history_enabled;
+                Task::none()
+            }
+
+            Message::WipeChatHistory => {
+                self.user_information.chat_history = Arc::new(Mutex::new(
+                    CurrentChat { 
+                        chats: vec![]
+                    }
+                ));
                 Task::none()
             }
 
@@ -570,6 +607,8 @@ impl Default for Program {
             .unwrap_or(&false);
         let info_popup = *settings_hmap.get("info_popup")
             .unwrap_or(&false);
+        let dark_mode = *settings_hmap.get("dark_mode")
+            .unwrap_or(&false);
 
         // Writing to history.json for the first time
         let history: History = History { 
@@ -614,6 +653,10 @@ impl Default for Program {
                 logging_channel:  Arc::new(Mutex::new(std::sync::mpsc::channel::<Log>()))
             },
             user_information: UserInformation { 
+                chat_history: Arc::new(Mutex::new(CurrentChat {
+                    chats: vec![]
+                })), 
+                current_chat_history_enabled: true,
                 model: None, 
                 think: false,
                 temperature: 7.0,
@@ -630,6 +673,7 @@ impl Default for Program {
             app_state: AppState { 
                 filtering: filtering, 
                 show_info_popup: info_popup,
+                dark_mode: dark_mode,
                 logs: history, 
                 logging: logging, 
                 ollama_state: Arc::new(Mutex::new("Offline".to_string())), 

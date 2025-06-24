@@ -134,7 +134,14 @@ impl Program {
                         ),
                         // Choose sys prompt 
                         Space::with_height(Length::Fixed(10.0)),
-                        widget::text("Select system prompt:"),
+                        widget::row!(
+                            widget::text("Select system prompt:"),
+                            Space::with_width(Length::Fixed(220.0)),
+                            widget::checkbox("Enable Chat History", user_information.current_chat_history_enabled)
+                                .on_toggle(|_| Message::ToggleChatHistory),
+                            Space::with_width(Length::Fixed(50.0)),
+                            widget::button("Wipe Chat History").on_press(Message::WipeChatHistory)
+                        ),
                         Space::with_height(Length::Fixed(5.0)),
                         widget::row!( 
                             widget::pick_list(

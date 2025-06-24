@@ -53,6 +53,27 @@ impl History {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct CurrentChat { 
+    pub chats: Vec<String>
+}
+impl CurrentChat { 
+    fn push_chat(&mut self, chat: String) {
+        self.chats.push(chat);
+    }
+    fn generate_new_message(user_message: String, bot_response: String) -> String {
+        return format!("AI Language Model: {}\nUser: {}", bot_response, user_message);
+    }
+    pub fn generate_and_push(&mut self, user_message: String, bot_response: String) {
+        let new_message = Self::generate_new_message(user_message, bot_response);
+        self.push_chat(new_message);
+    }
+    pub fn unravel(&self) -> String {
+        self.chats.join("\n")
+    }
+}
+
+
 // AppState keeps information on certain important information
 pub struct AppState { 
     pub filtering: bool, 
@@ -61,6 +82,7 @@ pub struct AppState {
     pub ollama_state: Arc<Mutex<String>>,
     pub bots_list: Arc<Mutex<Vec<String>>>,
     pub show_info_popup: bool,
+    pub dark_mode: bool,
 }
 
 // SystemPrompt saves the current system prompts and the currently selected system prompt
@@ -113,6 +135,8 @@ pub struct UserInformation {
     pub think: bool,
     pub temperature: f32,
     pub text_size: f32,
+    pub chat_history: Arc<Mutex<CurrentChat>>,
+    pub current_chat_history_enabled: bool
 }
 
 /// Channels
