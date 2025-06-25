@@ -62,7 +62,7 @@ impl CurrentChat {
         self.chats.push(chat);
     }
     fn generate_new_message(user_message: String, bot_response: String) -> String {
-        return format!("AI Language Model: {}\nUser: {}", bot_response, user_message);
+        return format!("User: {}\nAI Language Model: {}", user_message, bot_response);
     }
     pub fn generate_and_push(&mut self, user_message: String, bot_response: String) {
         let new_message = Self::generate_new_message(user_message, bot_response);
