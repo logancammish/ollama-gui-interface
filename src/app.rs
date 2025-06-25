@@ -136,7 +136,8 @@ pub struct UserInformation {
     pub temperature: f32,
     pub text_size: f32,
     pub chat_history: Arc<Mutex<CurrentChat>>,
-    pub current_chat_history_enabled: bool
+    pub current_chat_history_enabled: bool,
+    pub viewing_chat_history: bool
 }
 
 /// Channels

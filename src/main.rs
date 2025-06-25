@@ -42,6 +42,7 @@ const APP_VERSION: &str = "0.2.5"; // The current version of the application
 // message enum defined to send communications to the GUI logic
 #[derive(Debug, Clone)]
 enum Message {
+    ViewChatHistory,
     ListPrompt,
     ToggleThinking,
     SystemPromptChange(String),
@@ -378,6 +379,11 @@ impl Program {
                 Task::none()
             }
 
+            Message::ViewChatHistory => {
+                self.user_information.viewing_chat_history = !self.user_information.viewing_chat_history;
+                Task::none()
+            }
+
             Message::UpdateTextSize(n) => {
                 self.user_information.text_size = n;
                 Task::none()
@@ -660,7 +666,8 @@ impl Default for Program {
                 model: None, 
                 think: false,
                 temperature: 7.0,
-                text_size: 24.0
+                text_size: 24.0,
+                viewing_chat_history: false
             },
             response: Response { 
                 response_as_string: Arc::new(Mutex::new(String::new())), 

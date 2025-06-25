@@ -1,5 +1,5 @@
 use iced::{alignment, widget::{self, container}, Color, Length, Theme};
-use iced_widget::{markdown, Space};
+use iced_widget::{graphics::text::cosmic_text::rustybuzz::script::WANCHO, markdown, runtime::task::widget, Space};
 
 use crate::{Program, Message};
 
@@ -33,6 +33,16 @@ impl Program {
                     Space::with_height(Length::Fixed(10.0)),
                     widget::button("I understand").on_press(Message::ToggleInfoPopup),
             ]).padding(10).into();
+        } else if self.user_information.viewing_chat_history {
+            let chat_history = self.user_information.chat_history.lock().unwrap().clone();
+            return container ( 
+                widget::column![
+                    widget::scrollable(
+                        widget::text(format!("History:\n\n{}", chat_history.unravel()))
+                    ).height(Length::Fill),
+                    widget::button("Go back").on_press(Message::ViewChatHistory)
+                ]
+            ).padding(10).into();
         } else { 
             let user_information = self.user_information.clone();
             let bots_list = self.app_state.bots_list.lock().unwrap().clone();
@@ -152,7 +162,9 @@ impl Program {
                             widget::checkbox("Enable Chat History", user_information.current_chat_history_enabled)
                                 .on_toggle(|_| Message::ToggleChatHistory),
                             Space::with_width(Length::Fixed(50.0)),
-                            widget::button("Wipe Chat History").on_press(Message::WipeChatHistory)
+                            widget::button("Wipe Chat History").on_press(Message::WipeChatHistory),
+                            Space::with_width(Length::Fixed(50.0)),
+                            widget::button("View Chat History").on_press(Message::ViewChatHistory)
                         ),
                         Space::with_height(Length::Fixed(5.0)),
                         widget::row!( 
@@ -178,12 +190,17 @@ impl Program {
                         ),
                         Space::with_height(Length::Fixed(10.0)),
                         //Debug message
-                        widget::text(self.debug_message.clone().message).color(
-                            if self.debug_message.clone().is_error {
-                                Color::from_rgb(0.8, 0.2, 0.2)
-                            } else { 
-                                Color::from_rgb(0.1,0.8,0.1)
-                            }),
+                        widget::row!(
+                            widget::text(self.debug_message.clone().message).color(
+                                if self.debug_message.clone().is_error {
+                                    Color::from_rgb(0.8, 0.2, 0.2)
+                                } else { 
+                                    Color::from_rgb(0.1,0.8,0.1)
+                                }
+                            ),
+                            Space::with_width(Length::Fixed(50.0)),
+                            widget::button("Help me").on_press(Message::ToggleInfoPopup)
+                        )
 
                         
                     ]
