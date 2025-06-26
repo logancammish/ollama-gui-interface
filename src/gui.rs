@@ -1,7 +1,8 @@
-use iced::{alignment, widget::{self, container}, Color, Length, Theme};
-use iced_widget::{graphics::text::cosmic_text::rustybuzz::script::WANCHO, markdown, runtime::task::widget, Space};
+use iced::{ alignment, widget::{self, container}, Color, Length, Theme };
+use iced_widget::{ markdown, Space };
 
 use crate::{Program, Message};
+
 
 
 impl Program {
@@ -38,7 +39,7 @@ impl Program {
             return container ( 
                 widget::column![
                     widget::scrollable(
-                        widget::text(format!("History:\n\n{}", chat_history.unravel()))
+                        widget::text(chat_history.unravel())
                     ).height(Length::Fill),
                     widget::button("Go back").on_press(Message::ViewChatHistory)
                 ]
@@ -191,6 +192,7 @@ impl Program {
                         Space::with_height(Length::Fixed(10.0)),
                         //Debug message
                         widget::row!(
+
                             widget::text(self.debug_message.clone().message).color(
                                 if self.debug_message.clone().is_error {
                                     Color::from_rgb(0.8, 0.2, 0.2)
@@ -198,9 +200,9 @@ impl Program {
                                     Color::from_rgb(0.1,0.8,0.1)
                                 }
                             ),
-                            Space::with_width(Length::Fixed(50.0)),
-                            widget::button("Help me").on_press(Message::ToggleInfoPopup)
-                        )
+                        ),
+                        widget::button("Help me").on_press(Message::ToggleInfoPopup),
+
 
                         
                     ]
