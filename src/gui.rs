@@ -26,7 +26,7 @@ impl Program {
                     Space::with_height(Length::Fixed(5.0)),
                     widget::text("You can also update settings in the file config/settings.json, and the system prompts in config/defaultprompts.json."),
                     Space::with_height(Length::Fixed(10.0)),
-                    widget::text("When editing the system prompts, after entering the name of the prompt, the first text you add is the password (set to None if there is none) and then the actual prompt."),
+                    widget::text("You can edit the system prompts in the config/defaultprompts.json file."),
                     Space::with_height(Length::Fixed(10.0)),
                     widget::text("The file contains default examples which you can view if you want to see how it works."),
                     Space::with_height(Length::Fixed(10.0)),
