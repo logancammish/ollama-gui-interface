@@ -3025,7 +3025,7 @@ dependencies = [
 
 [[package]]
 name = "ollama-gui"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "chrono",
  "crossbeam-channel",
