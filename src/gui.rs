@@ -1,6 +1,6 @@
 
-use iced::{ alignment::{self, Horizontal}, widget::{self, container}, Color, Length, Theme };
-use iced_widget::{ markdown, Space };
+use iced::{ alignment::{self, Horizontal}, border::Radius, widget::{self, container}, Background, Border, Color, Length, Shadow, Theme, Vector };
+use iced_widget::{ container::Style, markdown, Space };
 
 use crate::{Program, Message, GUIState, Correspondence};
 
@@ -70,19 +70,65 @@ impl Program {
                 let mut all_widgets: Vec<iced::Element<Message>> = chat_messages.iter().flat_map(|message| {
                     vec![
                         match message { 
-                            Correspondence::Bot(text) => {
-                                widget::container(
-                                    widget::text(format!("{}", text)).size(user_information.text_size as u16).align_x(Horizontal::Right)
+                            Correspondence::User(text) => {
+                                widget::row!(
+                                    Space::with_width(Length::Fill),
+                                    widget::container(
+                                        widget::text(format!("{}", text))
+                                        .size(user_information.text_size as u16)
+                                        .align_x(Horizontal::Right)
+                                        
+
+                                    )                   
+                                    .padding(10)
+                                    .width(Length::Shrink)
+                                    .style(|_style: &_| Style {
+                                        text_color: None,
+                                        background: Some(Background::Color(Color::from_rgb(0.15, 0.15, 0.15))),
+                                        border: Border { 
+                                            color: Color::from_rgb(0.10, 0.10, 0.10), 
+                                            width: 1.5, 
+                                            radius: Radius::from(10.0)
+                                        },
+                                        shadow: Shadow {
+                                            color: Color::from_rgb(0.05, 0.05, 0.05),
+                                            offset: Vector::from([4.0, 3.0]), 
+                                            blur_radius: 5.0
+
+                                        }
+                                    })
+                                    .align_x(Horizontal::Right),
+                                    Space::with_width(Length::Fixed(10.0)),
                                 )
-                                .align_x(Horizontal::Right)
                                 .into()
                             }
-                            Correspondence::User(text) => {
-                                widget::container(
-                                    widget::text(format!("> {}", text)).size(user_information.text_size as u16).align_x(Horizontal::Left)
+                            Correspondence::Bot(text) => {
+                                widget::row!(
+                                    Space::with_width(Length::Fixed(10.0)),
+                                    widget::container(
+                                        widget::text(format!("{}", text)).size(user_information.text_size as u16).align_x(Horizontal::Left)
+                                    )
+                                    .align_x(Horizontal::Left)
+                                    .padding(10.0)
+                                    .style(|_style: &_| Style {
+                                        text_color: None,
+                                        background: Some(Background::Color(Color::from_rgb(0.10, 0.10, 0.10))),
+                                        border: Border { 
+                                            color: Color::from_rgb(0.09, 0.09, 0.09), 
+                                            width: 1.5, 
+                                            radius: Radius::from(10.0)
+                                        },
+                                        shadow: Shadow {
+                                            color: Color::from_rgb(0.05, 0.05, 0.05),
+                                            offset: Vector::from([3.0, 4.0]), 
+                                            blur_radius: 5.0
+
+                                        }
+                                    }),
+
                                 )
-                                .align_x(Horizontal::Left)
                                 .into()
+                                
                             }
                         }, 
                         Space::with_height(Length::Fixed(10.0)).into()
@@ -103,16 +149,41 @@ impl Program {
                                     widget::Column::with_children(
                                         all_widgets
                                     ),
-                                    markdown::view(
-                                        &self.response.parsed_markdown,
-                                        markdown::Settings {
-                                            text_size: iced::Pixels(user_information.text_size),
-                                            ..markdown::Settings::default()
-                                        },
-                                        markdown::Style::from_palette(Theme::Dark.palette())
-                                    ).map(|_| Message::None)
+                                    
+                                    widget::row!(
+                                        Space::with_width(Length::Fixed(10.0)),
+                                        widget::container( 
+                                            markdown::view(
+                                                &self.response.parsed_markdown,
+                                                markdown::Settings {
+                                                    text_size: iced::Pixels(user_information.text_size),
+                                                    ..markdown::Settings::default()
+                                                },
+                                                markdown::Style::from_palette(Theme::Dark.palette())
+                                            ).map(|_| Message::None)
+                                        ) 
+                                        .align_x(Horizontal::Left)
+                                        .padding(10.0)
+                                        .style(|_style: &_| Style {
+                                            text_color: None,
+                                            background: Some(Background::Color(Color::from_rgb(0.10, 0.10, 0.10))),
+                                            border: Border { 
+                                                color: Color::from_rgb(0.09, 0.09, 0.09), 
+                                                width: 1.5, 
+                                                radius: Radius::from(10.0)
+                                            },
+                                            shadow: Shadow {
+                                                color: Color::from_rgb(0.05, 0.05, 0.05),
+                                                offset: Vector::from([3.0, 4.0]), 
+                                                blur_radius: 5.0
+
+                                            }
+                                        }),
+                                    )
+
                                 ]
-                            ).height(Length::Fill),
+                            ).spacing(iced::Pixels(5.0))
+                            .height(Length::Fill),
                             // Copy button
                             widget::row!(
                                 widget::button("Copy")
