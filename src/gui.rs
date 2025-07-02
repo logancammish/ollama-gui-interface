@@ -106,7 +106,12 @@ impl Program {
                                 widget::row!(
                                     Space::with_width(Length::Fixed(10.0)),
                                     widget::container(
-                                        widget::text(format!("{}", text)).size(user_information.text_size as u16).align_x(Horizontal::Left)
+                                        widget::text_input("", text.as_str())
+                                        .on_input(|_| Message::None)
+                                        .on_input_maybe(Some(|_| Message::None))
+                                        
+                                        .size(user_information.text_size as u16)
+                                        .align_x(Horizontal::Left)
                                     )
                                     .align_x(Horizontal::Left)
                                     .padding(10.0)
@@ -179,7 +184,8 @@ impl Program {
 
                                             }
                                         }),
-                                    )
+                                    ),
+                                    Space::with_height(Length::Fixed(25.0))
 
                                 ]
                             ).spacing(iced::Pixels(5.0))
