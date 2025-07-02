@@ -24,7 +24,7 @@ use image;
 //local file imports
 mod gui; 
 mod app;
-use crate::app::{AppState, Channels, CurrentChat, DebugMessage, History, Log, Prompt, Response, SystemPrompt, UserInformation};
+use crate::app::{AppState, Channels, Correspondence, CurrentChat, DebugMessage, History, Log, Prompt, Response, SystemPrompt, UserInformation};
 
 /// Tick points:
 /// Each tick occurs every 1ms; so these will perform certain actions 
@@ -35,17 +35,22 @@ const MAX_TICK: i32 = 20000; // The maximum tick in which the ticks will reset
 const BOT_LIST_TICK: i32 = 1000; // The tick in which the Ollama bots list will be checked
 const TICK_MS: u64 = 200; // Tick rate
 ///
-const APP_VERSION: &str = "0.2.7"; // The current version of the application
+const APP_VERSION: &str = "0.3.0"; // The current version of the application
 
-
-
+#[derive(PartialEq, Clone, Copy)]
+pub enum GUIState {
+    InfoPopup, 
+    Main,
+    Settings,
+    AdvancedSettings
+}
 
 // message enum defined to send communications to the GUI logic
 #[derive(Debug, Clone)]
 enum Message {
-    ViewChatHistory,
     ListPrompt,
     ToggleThinking,
+    ToggleSettings,
     SystemPromptChange(String),
     Prompt(String),
     UpdatePrompt(String),
@@ -90,6 +95,7 @@ impl Program {
     // this function will prompt the Ollama interface and recieve a reaction, 
     // then send this information to the GUI
     fn prompt(&mut self, prompt: String) {
+
         // invalid case handler
         if self.user_information.model == None {
             Channels::send_request_to_channel(Arc::clone(&self.channels.debounce_channel), false);
@@ -161,12 +167,16 @@ impl Program {
         let filtering = self.app_state.filtering.clone(); 
         let user_info = self.user_information.clone();
         let channels = self.channels.clone();
+
+        user_info.chat_history.lock().unwrap().push_message(Correspondence::User(prompt.clone()));
+
         
         // create a new tokio runtime
         // this is done because the function is not async
         // but async programming must be done for the REST API calls
         self.runtime.spawn(async move {           
             println!("Received prompt: {}", prompt.clone());
+            user_info.chat_history.lock().unwrap().bot_responding = true;
 
             let system_prompt: String = system_prompt.unwrap();
             let ollama: Ollama = Ollama::default();
@@ -180,6 +190,7 @@ impl Program {
             } else {
                 prompt.clone()
             };
+
             let request: GenerationRequest<'_> = GenerationRequest::new(user_info.model.clone().unwrap(), to_send_prompt)
                 .options(ModelOptions::default().temperature(user_info.temperature / 10.0))
                 .system(system_prompt.clone());
@@ -250,8 +261,12 @@ impl Program {
                 user_info.chat_history
                     .lock()
                     .unwrap()
-                    .generate_and_push(prompt, final_response.join(""));
+                    .generate_and_push(prompt.clone(), final_response.join(""));
             }
+
+            user_info.chat_history.lock().unwrap().push_message(Correspondence::Bot(final_response.join("")));
+            
+            user_info.chat_history.lock().unwrap().bot_responding = true;
         });
         self.prompt.prompt = String::new();
     }
@@ -374,14 +389,11 @@ impl Program {
             Message::WipeChatHistory => {
                 self.user_information.chat_history = Arc::new(Mutex::new(
                     CurrentChat { 
-                        chats: vec![]
+                        chats: vec![],
+                        messages: vec![],
+                        bot_responding: false
                     }
                 ));
-                Task::none()
-            }
-
-            Message::ViewChatHistory => {
-                self.user_information.viewing_chat_history = !self.user_information.viewing_chat_history;
                 Task::none()
             }
 
@@ -391,7 +403,20 @@ impl Program {
             }
 
             Message::ToggleInfoPopup => {
-                self.app_state.show_info_popup = !self.app_state.show_info_popup;
+                if self.app_state.gui_state == GUIState::InfoPopup {
+                    self.app_state.gui_state = GUIState::Main;
+                } else {
+                    self.app_state.gui_state = GUIState::InfoPopup;
+                }
+                Task::none()
+            }
+
+            Message::ToggleSettings => {
+                if self.app_state.gui_state == GUIState::Settings {
+                    self.app_state.gui_state = GUIState::Main;
+                } else {
+                    self.app_state.gui_state = GUIState::Settings;  
+                }
                 Task::none()
             }
 
@@ -518,7 +543,7 @@ impl Program {
 
     // display the GUI
     fn view(&self) -> Element<Message> {
-        Self::get_ui_information(self, self.app_state.show_info_popup).into()
+        Self::get_ui_information(self, self.app_state.gui_state).into()
     }
 
     // sets up the Tick and keypressed events
@@ -661,14 +686,15 @@ impl Default for Program {
             },
             user_information: UserInformation { 
                 chat_history: Arc::new(Mutex::new(CurrentChat {
-                    chats: vec![]
+                    chats: vec![],
+                    messages: vec![],
+                    bot_responding: false
                 })), 
                 current_chat_history_enabled: true,
                 model: None, 
                 think: false,
                 temperature: 7.0,
                 text_size: 24.0,
-                viewing_chat_history: false
             },
             response: Response { 
                 response_as_string: Arc::new(Mutex::new(String::new())), 
@@ -680,7 +706,11 @@ impl Default for Program {
             },
             app_state: AppState { 
                 filtering: filtering, 
-                show_info_popup: info_popup,
+                gui_state: if info_popup {
+                    GUIState::InfoPopup
+                } else {
+                    GUIState::Main
+                },
                 dark_mode: dark_mode,
                 logs: history, 
                 logging: logging, 

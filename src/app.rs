@@ -3,7 +3,13 @@ use std::{collections::HashMap, sync::{Arc, Mutex}};
 use chrono::Local;
 use iced_widget::markdown;
 use serde::Serialize;
-use crate::{Program};
+use crate::{Program, GUIState};
+
+
+#[derive(Clone, Debug)]
+pub enum Correspondence {
+    Bot(String), User(String)
+}
 
 
 #[derive(Clone)]
@@ -55,7 +61,9 @@ impl History {
 
 #[derive(Clone, Debug)]
 pub struct CurrentChat { 
-    pub chats: Vec<String>
+    pub chats: Vec<String>,
+    pub messages: Vec<Correspondence>,
+    pub bot_responding: bool
 }
 impl CurrentChat { 
     fn push_chat(&mut self, chat: String) {
@@ -71,6 +79,10 @@ impl CurrentChat {
     pub fn unravel(&self) -> String {
         self.chats.join("\n")
     }
+
+    pub fn push_message(&mut self, correspondence: Correspondence) {
+        self.messages.push(correspondence);
+    }
 }
 
 
@@ -81,7 +93,7 @@ pub struct AppState {
     pub logging: bool, 
     pub ollama_state: Arc<Mutex<String>>,
     pub bots_list: Arc<Mutex<Vec<String>>>,
-    pub show_info_popup: bool,
+    pub gui_state: GUIState,
     pub dark_mode: bool,
 }
 
@@ -137,7 +149,6 @@ pub struct UserInformation {
     pub text_size: f32,
     pub chat_history: Arc<Mutex<CurrentChat>>,
     pub current_chat_history_enabled: bool,
-    pub viewing_chat_history: bool
 }
 
 /// Channels
