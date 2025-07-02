@@ -4,7 +4,7 @@ version = "0.2.6"
 edition = "2024"
 
 [dependencies]
-ollama-rs = { git = "https://github.com/pepperoni21/ollama-rs.git", branch = "master" , features = ["stream"]} 
+ollama-rs = { version = "0.3.2", features = ["stream"]} 
 tokio = { version = "1.45.1", features = ["full"] }
 iced = "0.13.1"
 iced_widget = { version = "0.13.4", features = ["markdown"] }

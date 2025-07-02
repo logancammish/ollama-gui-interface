@@ -39,6 +39,7 @@ const APP_VERSION: &str = "0.2.6"; // The current version of the application
 
 
 
+
 // message enum defined to send communications to the GUI logic
 #[derive(Debug, Clone)]
 enum Message {
