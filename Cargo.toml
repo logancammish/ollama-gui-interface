@@ -5,8 +5,8 @@ edition = "2024"
 
 [dependencies]
 ollama-rs = { version = "0.3.2", features = ["stream"]} 
-tokio = { version = "1.45.1", features = ["full"] }
-iced = "0.13.1"
+tokio = { version = "1.46.0", features = ["full"] }
+iced = { version = "0.13.1", features = ["advanced"]}
 iced_widget = { version = "0.13.4", features = ["markdown"] }
 futures = "0.3.31"
 iced_native = "0.10.3"

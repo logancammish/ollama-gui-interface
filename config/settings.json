@@ -1,6 +1,6 @@
 {
     "filtering": true,
     "logging": false,
-    "dark_mode": true,
+    "dark_mode": false,
     "info_popup": true
 }

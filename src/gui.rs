@@ -83,7 +83,7 @@ impl Program {
                                     .padding(10)
                                     .width(Length::Shrink)
                                     .style(|_style: &_| Style {
-                                        text_color: None,
+                                        text_color: Some(Color::from_rgb(1.0,1.0,1.0)),
                                         background: Some(Background::Color(Color::from_rgb(0.15, 0.15, 0.15))),
                                         border: Border { 
                                             color: Color::from_rgb(0.10, 0.10, 0.10), 
@@ -107,16 +107,27 @@ impl Program {
                                     Space::with_width(Length::Fixed(10.0)),
                                     widget::container(
                                         widget::text_input("", text.as_str())
-                                        .on_input(|_| Message::None)
-                                        .on_input_maybe(Some(|_| Message::None))
-                                        
-                                        .size(user_information.text_size as u16)
-                                        .align_x(Horizontal::Left)
+                                            .on_input(|_| Message::None)
+                                            .on_input_maybe(Some(|_| Message::None))
+                                            .style(|_theme, _status| iced_widget::text_input::Style {
+                                                background: Background::Color(Color::from_rgb(0.10, 0.10, 0.10)),
+                                                border: Border {
+                                                    color: Color::from_rgb(0.0, 0.0, 0.0),
+                                                    width: 0.0,
+                                                    radius: Radius::from(0.0),
+                                                },
+                                                icon: Color::from_rgb(0.0, 0.0, 0.0),
+                                                placeholder: Color::from_rgb(0.0, 0.0, 0.0),
+                                                value: Color::from_rgb(1.0, 1.0, 1.0),
+                                                selection: Color::from_rgb(0.9, 0.9, 0.9),
+                                            })
+                                            .size(user_information.text_size as u16)
+                                            .align_x(Horizontal::Left)
                                     )
                                     .align_x(Horizontal::Left)
                                     .padding(10.0)
                                     .style(|_style: &_| Style {
-                                        text_color: None,
+                                        text_color: Some(Color::from_rgb(1.0,1.0,1.0)),
                                         background: Some(Background::Color(Color::from_rgb(0.10, 0.10, 0.10))),
                                         border: Border { 
                                             color: Color::from_rgb(0.09, 0.09, 0.09), 
@@ -170,7 +181,7 @@ impl Program {
                                         .align_x(Horizontal::Left)
                                         .padding(10.0)
                                         .style(|_style: &_| Style {
-                                            text_color: None,
+                                            text_color: Some(Color::from_rgb(1.0,1.0,1.0)),
                                             background: Some(Background::Color(Color::from_rgb(0.10, 0.10, 0.10))),
                                             border: Border { 
                                                 color: Color::from_rgb(0.09, 0.09, 0.09), 
