@@ -1,4 +1,4 @@
-#![windows_subsystem = "windows"]
+//#![windows_subsystem = "windows"]
 //std crate imports
 use std::collections::HashMap;
 use std::pin::Pin;
@@ -24,7 +24,7 @@ use image;
 //local file imports
 mod gui; 
 mod app;
-use crate::app::{AppState, Channels, Correspondence, CurrentChat, DebugMessage, History, Log, Prompt, Response, SystemPrompt, UserInformation};
+use crate::app::{AppState, Channels, Correspondence, CurrentChat, DebugMessage, History, HostLocation, Log, Prompt, Response, SystemPrompt, UserInformation};
 
 /// Tick points:
 /// Each tick occurs every 1ms; so these will perform certain actions 
@@ -35,7 +35,7 @@ const MAX_TICK: i32 = 20000; // The maximum tick in which the ticks will reset
 const BOT_LIST_TICK: i32 = 1000; // The tick in which the Ollama bots list will be checked
 const TICK_MS: u64 = 200; // Tick rate
 ///
-const APP_VERSION: &str = "0.3.2"; // The current version of the application
+const APP_VERSION: &str = "0.3.3"; // The current version of the application
 
 #[derive(PartialEq, Clone, Copy)]
 pub enum GUIState {
@@ -67,7 +67,9 @@ enum Message {
     UpdateTemperature(f32),
     ToggleInfoPopup,
     ToggleChatHistory,
-    WipeChatHistory
+    WipeChatHistory,
+    ChangeIp(String),
+    ChangePort(String)
 } 
 
 
@@ -86,6 +88,16 @@ struct Program {
     response: Response,
     prompt: Prompt
 }
+
+fn convert_port_to_u16(port: String) -> u16 {
+    return match port.parse::<u16>() {
+        Ok(p) => p,
+        Err(_) => {
+            eprintln!("Invalid port number: {}", port);
+            11434 as u16
+        }
+    };
+} 
 
 // impliment the program function with several functions
 // to allow the program to function
@@ -179,7 +191,8 @@ impl Program {
             user_info.chat_history.lock().unwrap().bot_responding = true;
 
             let system_prompt: String = system_prompt.unwrap();
-            let ollama: Ollama = Ollama::default();
+            let ip = user_info.ip_address.clone();
+            let ollama = Ollama::new(format!("http://{}", ip.ip), convert_port_to_u16(ip.port));
             let to_send_prompt: String = if user_info.current_chat_history_enabled {
                 format!("The following is a conversation between an AI language model and a User. You are the AI language model:
                     {}
@@ -296,9 +309,13 @@ impl Program {
 
                 if self.current_tick == VERSION_TICK {
                     let ollama_state = Arc::clone(&self.app_state.ollama_state);
+                    let user_info = self.user_information.clone();
 
                     self.runtime.spawn(async move {
-                        match reqwest::get("http://127.0.0.1:11434/api/version").await {
+                        let ip = user_info.ip_address;
+                        let url = format!("http://{}:{}/api/version", ip.ip, ip.port.to_string());
+
+                        match reqwest::get(url).await {
                             Ok(response) => {
                                 if response.status().is_success() {
                                      match response.json::<serde_json::Value>().await {
@@ -324,7 +341,8 @@ impl Program {
                         }
                     });
                 } else if self.current_tick == BOT_LIST_TICK {      
-                    let ollama = Ollama::default();
+                    let ip = self.user_information.ip_address.clone();
+                    let ollama = Ollama::new(format!("http://{}", ip.ip), convert_port_to_u16(ip.port));
                     let bots_list = Arc::clone(&self.app_state.bots_list);
                     let channels = self.channels.clone();
 
@@ -377,6 +395,18 @@ impl Program {
                         }
                     };
                 }
+
+                Task::none()
+            }
+
+            Message::ChangeIp(ip) => {
+                self.user_information.ip_address.ip = ip;
+
+                Task::none()
+            }
+
+            Message::ChangePort(port) => {
+                self.user_information.ip_address.port = port;
 
                 Task::none()
             }
@@ -443,7 +473,9 @@ impl Program {
                     }
                 );
 
-                let ollama = Ollama::default();
+
+                let ip = self.user_information.ip_address.clone();
+                let ollama = Ollama::new(format!("http://{}", ip.ip), convert_port_to_u16(ip.port));                
                 let channels = self.channels.clone();
 
                 self.runtime.spawn(async move {
@@ -695,6 +727,10 @@ impl Default for Program {
                 think: false,
                 temperature: 7.0,
                 text_size: 24.0,
+                ip_address: HostLocation {
+                    ip: "127.0.0.1".to_string(),
+                    port: "11434".to_string(),
+                }
             },
             response: Response { 
                 response_as_string: Arc::new(Mutex::new(String::new())), 

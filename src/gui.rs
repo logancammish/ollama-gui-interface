@@ -278,6 +278,7 @@ impl Program {
                 }
                 GUIState::Settings => {
                     let user_information = self.user_information.clone();
+                    let ip = self.user_information.ip_address.clone();
                     let bots_list = self.app_state.bots_list.lock().unwrap().clone();
                     let prompts_list = self.system_prompt.system_prompts_as_vec.lock().unwrap().clone();
                     let model_install = iced::widget::TextInput::<Message>::new(
@@ -289,6 +290,26 @@ impl Program {
                         .width(iced::Length::Fixed(270.0))
                         .on_submit(Message::InstallModel(self.installing_model.clone()))
                         .on_input(|input| { Message::UpdateInstall(input) });
+
+                    let change_ip = iced::widget::TextInput::<Message>::new(
+                        ip.ip.as_str(),
+                        &ip.ip,
+                    )
+                        .padding(10)
+                        .size(7)
+                        .width(iced::Length::Fixed(270.0))
+                        .on_submit(Message::ChangeIp(ip.ip.clone()))
+                        .on_input(|input| { Message::ChangeIp(input) });
+
+                    let change_port = iced::widget::TextInput::<Message>::new(
+                        ip.port.as_str(),
+                        &ip.port,
+                    )
+                        .padding(10)
+                        .size(7)
+                        .width(iced::Length::Fixed(270.0))
+                        .on_submit(Message::ChangePort(ip.port.clone()))
+                        .on_input(|input| { Message::ChangePort(input) });
 
                     return widget::container(
                         widget::column![
@@ -354,7 +375,21 @@ impl Program {
                                 widget::text("Model to install (e.g. llama3.2:3b): "),
                                 model_install,
                             ),
-                            
+                            // Change IP
+                            Space::with_height(Length::Fixed(10.0)),
+
+                            widget::row!(
+                                widget::text("Change Ollama IP address: "),
+                                change_ip,
+                                widget::text(":"),
+                                change_port
+                            ),
+
+                            Space::with_height(Length::Fixed(10.0)),
+                            widget::text(format!("IP address is currently {}", 
+                                format!("{}:{}", user_information.ip_address.ip, user_information.ip_address.port))),
+                            Space::with_height(Length::Fixed(10.0)),
+
                             widget::row!(
                                 widget::checkbox("Enable Chat History", user_information.current_chat_history_enabled)
                                     .on_toggle(|_| Message::ToggleChatHistory),

@@ -140,6 +140,12 @@ impl SystemPrompt {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct HostLocation { 
+    pub ip: String, 
+    pub port: String
+}
+
 // UserInformation saves certain important information about the program specific to the current user 
 #[derive(Clone)]
 pub struct UserInformation {
@@ -149,6 +155,7 @@ pub struct UserInformation {
     pub text_size: f32,
     pub chat_history: Arc<Mutex<CurrentChat>>,
     pub current_chat_history_enabled: bool,
+    pub ip_address: HostLocation
 }
 
 /// Channels
