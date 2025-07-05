@@ -35,7 +35,7 @@ const MAX_TICK: i32 = 20000; // The maximum tick in which the ticks will reset
 const BOT_LIST_TICK: i32 = 1000; // The tick in which the Ollama bots list will be checked
 const TICK_MS: u64 = 200; // Tick rate
 ///
-const APP_VERSION: &str = "0.3.4"; // The current version of the application
+const APP_VERSION: &str = "0.3.4 "; // The current version of the application
 
 #[derive(PartialEq, Clone, Copy)]
 pub enum GUIState {
