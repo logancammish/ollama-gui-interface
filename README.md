@@ -1,6 +1,9 @@
 # ollama-gui-interface
 [![build](https://github.com/logancammish/ollama-gui-interface/actions/workflows/rust.yml/badge.svg)](https://github.com/logancammish/ollama-gui-interface/actions/workflows/rust.yml)
 
+## Please note: 
+As of 27/07/2025, this project is now archived. Unless interest for it grows, I will not return to it.
+
 A GUI interface for Ollama bots written in Rust
 
 ## Streamlined installation
