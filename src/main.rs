@@ -35,7 +35,7 @@ const MAX_TICK: i32 = 20000; // The maximum tick in which the ticks will reset
 const BOT_LIST_TICK: i32 = 1000; // The tick in which the Ollama bots list will be checked
 const TICK_MS: u64 = 200; // Tick rate
 ///
-const APP_VERSION: &str = "0.3.4 "; // The current version of the application
+const APP_VERSION: &str = "0.3.5"; // The current version of the application
 
 #[derive(PartialEq, Clone, Copy)]
 pub enum GUIState {
@@ -68,6 +68,7 @@ enum Message {
     ToggleInfoPopup,
     ToggleChatHistory,
     WipeChatHistory,
+    ToggleAdvancedSettings,
     ChangeIp(String),
     ChangePort(String)
 } 
@@ -424,6 +425,8 @@ impl Program {
                         bot_responding: false
                     }
                 ));
+                self.response.parsed_markdown = vec![];
+                *self.response.response_as_string.lock().unwrap() = String::new(); 
                 Task::none()
             }
 
@@ -446,6 +449,15 @@ impl Program {
                     self.app_state.gui_state = GUIState::Main;
                 } else {
                     self.app_state.gui_state = GUIState::Settings;  
+                }
+                Task::none()
+            }
+
+            Message::ToggleAdvancedSettings => {
+                if self.app_state.gui_state == GUIState::AdvancedSettings {
+                    self.app_state.gui_state = GUIState::Settings;
+                } else {
+                    self.app_state.gui_state = GUIState::AdvancedSettings;
                 }
                 Task::none()
             }

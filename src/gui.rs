@@ -281,36 +281,7 @@ impl Program {
                     let ip = self.user_information.ip_address.clone();
                     let bots_list = self.app_state.bots_list.lock().unwrap().clone();
                     let prompts_list = self.system_prompt.system_prompts_as_vec.lock().unwrap().clone();
-                    let model_install = iced::widget::TextInput::<Message>::new(
-                        "Model name",
-                        &self.installing_model,
-                    )
-                        .padding(10)
-                        .size(7)
-                        .width(iced::Length::Fixed(270.0))
-                        .on_submit(Message::InstallModel(self.installing_model.clone()))
-                        .on_input(|input| { Message::UpdateInstall(input) });
-
-                    let change_ip = iced::widget::TextInput::<Message>::new(
-                        ip.ip.as_str(),
-                        &ip.ip,
-                    )
-                        .padding(10)
-                        .size(7)
-                        .width(iced::Length::Fixed(270.0))
-                        .on_submit(Message::ChangeIp(ip.ip.clone()))
-                        .on_input(|input| { Message::ChangeIp(input) });
-
-                    let change_port = iced::widget::TextInput::<Message>::new(
-                        ip.port.as_str(),
-                        &ip.port,
-                    )
-                        .padding(10)
-                        .size(7)
-                        .width(iced::Length::Fixed(270.0))
-                        .on_submit(Message::ChangePort(ip.port.clone()))
-                        .on_input(|input| { Message::ChangePort(input) });
-
+                    
                     return widget::container(
                         widget::column![
                              // Choose bot / enable/disable thinking
@@ -370,25 +341,6 @@ impl Program {
                                 Message::UpdateTextSize
                             ),
                             Space::with_height(Length::Fixed(10.0)),
-                            // Install model / 
-                            widget::row!(
-                                widget::text("Model to install (e.g. llama3.2:3b): "),
-                                model_install,
-                            ),
-                            // Change IP
-                            Space::with_height(Length::Fixed(10.0)),
-
-                            widget::row!(
-                                widget::text("Change Ollama IP address: "),
-                                change_ip,
-                                widget::text(":"),
-                                change_port
-                            ),
-
-                            Space::with_height(Length::Fixed(10.0)),
-                            widget::text(format!("IP address is currently {}", 
-                                format!("{}:{}", user_information.ip_address.ip, user_information.ip_address.port))),
-                            Space::with_height(Length::Fixed(10.0)),
 
                             widget::row!(
                                 widget::checkbox("Enable Chat History", user_information.current_chat_history_enabled)
@@ -414,6 +366,9 @@ impl Program {
                                                         Space::with_height(Length::Fixed(10.0)),
 
 
+                            widget::button("Advanced Settings").on_press(Message::ToggleAdvancedSettings),
+                            
+                                                        Space::with_height(Length::Fixed(7.0)),
                             widget::button("Go back").on_press(Message::ToggleSettings),
                         ]
                     )
@@ -421,7 +376,81 @@ impl Program {
                     .into();
                 }
                 GUIState::AdvancedSettings => {
-                    return widget::container(widget::row![]).into();
+                    let user_information = self.user_information.clone();
+                    let ip = self.user_information.ip_address.clone();
+                    let prompts_list = self.system_prompt.system_prompts_as_vec.lock().unwrap().clone();
+                    let model_install = iced::widget::TextInput::<Message>::new(
+                        "Model name",
+                        &self.installing_model,
+                    )
+                        .padding(10)
+                        .size(7)
+                        .width(iced::Length::Fixed(270.0))
+                        .on_submit(Message::InstallModel(self.installing_model.clone()))
+                        .on_input(|input| { Message::UpdateInstall(input) });
+
+                    let change_ip = iced::widget::TextInput::<Message>::new(
+                        ip.ip.as_str(),
+                        &ip.ip,
+                    )
+                        .padding(10)
+                        .size(7)
+                        .width(iced::Length::Fixed(270.0))
+                        .on_submit(Message::ChangeIp(ip.ip.clone()))
+                        .on_input(|input| { Message::ChangeIp(input) });
+
+                    let change_port = iced::widget::TextInput::<Message>::new(
+                        ip.port.as_str(),
+                        &ip.port,
+                    )
+                        .padding(10)
+                        .size(7)
+                        .width(iced::Length::Fixed(270.0))
+                        .on_submit(Message::ChangePort(ip.port.clone()))
+                        .on_input(|input| { Message::ChangePort(input) });
+
+                    return widget::container(
+                        widget::column![
+                            // Choose sys prompt 
+
+                            Space::with_height(Length::Fixed(10.0)),
+                            widget::text("Select system prompt:"),
+                            Space::with_height(Length::Fixed(5.0)),
+                            widget::row!( 
+                                widget::pick_list(
+                                    prompts_list,
+                                    self.system_prompt.system_prompt.clone(),
+                                    Message::SystemPromptChange,
+                                ),     
+                                Space::with_width(Length::Fixed(138.0)),
+                            ), 
+                            Space::with_height(Length::Fixed(10.0)),
+                            // Install model / 
+                            widget::row!(
+                                widget::text("Model to install (e.g. llama3.2:3b): "),
+                                model_install,
+                            ),
+                            // Change IP
+                            Space::with_height(Length::Fixed(10.0)),
+
+                            widget::row!(
+                                widget::text("Change Ollama IP address: "),
+                                change_ip,
+                                widget::text(":"),
+                                change_port
+                            ),
+
+                            Space::with_height(Length::Fixed(10.0)),
+                            widget::text(format!("IP address is currently {}", 
+                                format!("{}:{}", user_information.ip_address.ip, user_information.ip_address.port))),
+                            Space::with_height(Length::Fixed(10.0)),
+
+
+                            widget::button("Go back").on_press(Message::ToggleSettings),
+                        ]
+                    )
+                    .padding(20)
+                    .into();                
                 }
         }
     }
