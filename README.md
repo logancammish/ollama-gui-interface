@@ -4,9 +4,15 @@
 A GUI interface for Ollama bots written in Rust
 
 
-> ## Please note: 
-> As of 27/07/2025, this project is now archived. Unless interest for it grows, I will not return to it.
+## Please note:
+As of Ollama `0.10.0`, Ollama now has an official GUI interface - however, as far as I see as of `1.10.1`, it does not provide the following features:
+1. Enabling or disabling thinking
+2. Using a model hosted on an external IP
+3. Customising system prompt and chat history
+4. Enabling text filtering
+5. Easily accessible and toggleable history and logs
 
+   
 
 ## Streamlined installation
 
