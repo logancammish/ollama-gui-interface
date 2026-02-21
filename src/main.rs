@@ -3,19 +3,16 @@
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
-use std::task::{Poll, Context};
 use std::fs;
 //external crate imports
 use chrono::Local;
 use futures::Stream;
-use iced::{ clipboard, keyboard, Element, Size, Subscription, Task, Theme};
+use iced::{ Element, Size, Subscription, Task, Theme, clipboard, keyboard, time};
 use iced_widget::markdown;
 use ollama_rs::generation::completion::GenerationResponse;
 use ollama_rs::models::ModelOptions;
 use ollama_rs::Ollama;
 use ollama_rs::generation::completion::request::GenerationRequest;
-use tokio::runtime::Runtime; 
-use iced_native::subscription::Recipe;
 use futures::stream::StreamExt;
 use webbrowser;
 use serde_json;
@@ -30,12 +27,12 @@ use crate::app::{AppState, Channels, Correspondence, CurrentChat, DebugMessage, 
 /// Each tick occurs every 1ms; so these will perform certain actions 
 /// at each corresponding tick.
 /// These are constants for the purpose of easy modification. 
-const VERSION_TICK: i32 = 5000; // The tick in which the version of the program will be checked 
-const MAX_TICK: i32 = 20000; // The maximum tick in which the ticks will reset
-const BOT_LIST_TICK: i32 = 1000; // The tick in which the Ollama bots list will be checked
+const VERSION_TICK: i32 = 2; // The tick in which the version of the program will be checked 
+const MAX_TICK: i32 = 250; // The maximum tick in which the ticks will reset
+const BOT_LIST_TICK: i32 = 3; // The tick in which the Ollama bots list will be checked
 const TICK_MS: u64 = 200; // Tick rate
 ///
-const APP_VERSION: &str = "0.3.5"; // The current version of the application
+const APP_VERSION: &str = "0.3.6"; // The current version of the application
 
 #[derive(PartialEq, Clone, Copy)]
 pub enum GUIState {
@@ -48,6 +45,7 @@ pub enum GUIState {
 // message enum defined to send communications to the GUI logic
 #[derive(Debug, Clone)]
 enum Message {
+    AsyncResult(()),
     ListPrompt,
     ToggleThinking,
     ToggleSettings,
@@ -77,7 +75,6 @@ enum Message {
 // program struct, stores the current program state
 // e.g., the current prompt, debug message, etc.
 struct Program { 
-    runtime: Runtime,
     is_processing: bool,
     current_tick: i32,
     installing_model: String,
@@ -107,7 +104,7 @@ impl Program {
 
     // this function will prompt the Ollama interface and recieve a reaction, 
     // then send this information to the GUI
-    fn prompt(&mut self, prompt: String) {
+    fn prompt(&mut self, prompt: String) -> Task::<Message> {
 
         // invalid case handler
         if self.user_information.model == None {
@@ -119,7 +116,7 @@ impl Program {
                 }
             );
             println!("Model is None");
-            return; 
+            return Task::none(); 
         }
 
         self.prompt.prompt_time_sent = std::time::Instant::now();
@@ -173,7 +170,7 @@ impl Program {
                 }
             );
             Channels::send_request_to_channel(Arc::clone(&self.channels.debounce_channel), false); 
-            return;
+            return Task::none();
         }
         
         let logging = self.app_state.logging.clone(); 
@@ -184,10 +181,7 @@ impl Program {
         user_info.chat_history.lock().unwrap().push_message(Correspondence::User(prompt.clone()));
 
         
-        // create a new tokio runtime
-        // this is done because the function is not async
-        // but async programming must be done for the REST API calls
-        self.runtime.spawn(async move {           
+        return Task::perform(async move {           
             println!("Received prompt: {}", prompt.clone());
             user_info.chat_history.lock().unwrap().bot_responding = true;
 
@@ -281,14 +275,24 @@ impl Program {
             user_info.chat_history.lock().unwrap().push_message(Correspondence::Bot(final_response.join("")));
             
             user_info.chat_history.lock().unwrap().bot_responding = true;
-        });
-        self.prompt.prompt = String::new();
+            
+        }, |result| Message::AsyncResult(result));
+
+        
     }
 
     // update function which updates occurding to the current subscription,
     // this handles Message requests
+    fn boot() -> (Program, iced::Task<Message>) {
+        (Program::default(), iced::Task::none())
+    }
+
     fn update(&mut self, message: Message) -> Task<Message>  {
         match message { 
+            Message::AsyncResult(_result) => {
+                Task::none()
+            }
+
             Message::None => {
                 Task::none()
             }
@@ -299,9 +303,6 @@ impl Program {
             // - check the currently installed bots
             // - handle mpsc channels
             Message::Tick => { 
-                
-                //println!("{:?}", self.user_information.chat_history);
-             //   println!("Tick: {}", self.current_tick);
                 if self.current_tick > MAX_TICK {
                     println!("Resetting current tick");
                     self.current_tick = 0;
@@ -312,12 +313,14 @@ impl Program {
                     let ollama_state = Arc::clone(&self.app_state.ollama_state);
                     let user_info = self.user_information.clone();
 
-                    self.runtime.spawn(async move {
+                   return Task::perform(async move {
+                        println!("Checking Ollama version...");
                         let ip = user_info.ip_address;
                         let url = format!("http://{}:{}/api/version", ip.ip, ip.port.to_string());
 
                         match reqwest::get(url).await {
                             Ok(response) => {
+                                println!("API responded with status: {}", response.status());
                                 if response.status().is_success() {
                                      match response.json::<serde_json::Value>().await {
                                         Ok(json) => {
@@ -340,14 +343,14 @@ impl Program {
                                 *ollama_state.lock().unwrap() = "Offline".to_string();
                             }
                         }
-                    });
+                    }, |result| Message::AsyncResult(result));
                 } else if self.current_tick == BOT_LIST_TICK {      
                     let ip = self.user_information.ip_address.clone();
                     let ollama = Ollama::new(format!("http://{}", ip.ip), convert_port_to_u16(ip.port));
                     let bots_list = Arc::clone(&self.app_state.bots_list);
                     let channels = self.channels.clone();
 
-                    self.runtime.spawn(async move {
+                    return Task::perform(async move {
                         match ollama.list_local_models().await {
                             Ok(bots) => {
                                 bots.iter().for_each(|bot| {
@@ -368,7 +371,7 @@ impl Program {
                                 println!("Error: {:?}", e);
                             }
                         }
-                    });
+                    }, |result| Message::AsyncResult(result));
                 }
 
                 if let Ok(md) = self.channels.markdown_channel_reciever.try_recv() {
@@ -490,7 +493,7 @@ impl Program {
                 let ollama = Ollama::new(format!("http://{}", ip.ip), convert_port_to_u16(ip.port));                
                 let channels = self.channels.clone();
 
-                self.runtime.spawn(async move {
+                return Task::perform(async move {
                     match ollama.pull_model(model_install.clone(), false).await {
                         Ok(outcome) => {
                             println!("Model {} installed successfully: {}", model_install, outcome.message);     
@@ -511,8 +514,7 @@ impl Program {
                             );
                         }
                     };
-                });
-                return Task::none();
+                }, |result| Message::AsyncResult(result));
             }
 
             Message::ModelChange(model) => {
@@ -565,10 +567,11 @@ impl Program {
             Message::Prompt(prompt) => {
                 if !self.is_processing {
                     self.is_processing = true;
+                    self.prompt.prompt = String::new();
                     self.response.parsed_markdown = vec![];
                     *self.response.response_as_string.lock().unwrap() = String::new(); 
-                    Self::prompt(self, prompt.clone());
                     self.response.parsed_markdown = markdown::parse("Waiting for bot...").collect();
+                    return Self::prompt(self, prompt.clone());
 
                 }
                 Task::none()
@@ -586,42 +589,25 @@ impl Program {
     }
 
     // display the GUI
-    fn view(&self) -> Element<Message> {
-        Self::get_ui_information(self, self.app_state.gui_state).into()
+    fn view<'a>(&'a self) -> Element<'a, Message> {
+        Self::get_ui_information(self, &self.app_state.gui_state).into()
     }
 
     // sets up the Tick and keypressed events
     fn subscription(&self) -> Subscription<Message> {
-        struct Timer;
-        impl<H: std::hash::Hasher, E> Recipe<H, E> for Timer {            
-            type Output = Message;
-            fn hash(&self, state: &mut H) {
-                use std::hash::Hash;
-                "timer".hash(state);
-            }
-
-            fn stream(self: Box<Self>, _: futures::stream::BoxStream<'static, E>) -> futures::stream::BoxStream<'static, Self::Output> {
-                futures::stream::unfold((), |_| async {
-                    tokio::time::sleep(std::time::Duration::from_millis(TICK_MS)).await;
-                    Some((Message::Tick, ()))
-                }).boxed()
-            }
-        }
-
-        impl Stream for Timer {
-            type Item = Message;
-
-            fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-                cx.waker().wake_by_ref();
-                Poll::Ready(Some(Message::Tick))
-            }
-        }
-        
-
         Subscription::batch(vec![
-            keyboard::on_key_press(|key, _modifiers| Some(Message::KeyPressed(key))),
-            keyboard::on_key_release(|key, _modifiers| Some(Message::KeyReleased(key))),
-            Subscription::run_with_id("timer", Timer),
+        iced::event::listen().filter_map(|event| match event {
+            iced::event::Event::Keyboard(keyboard::Event::KeyPressed { key, .. }) =>
+                Some(Message::KeyPressed(key)),
+            iced::event::Event::Keyboard(keyboard::Event::KeyReleased { key, .. }) =>
+                Some(Message::KeyReleased(key)),
+            _ => None,
+        }),
+
+        time::every(std::time::Duration::from_millis(TICK_MS))
+            .map(|_| {
+                Message::Tick
+            })
         ])
     }
 }
@@ -665,7 +651,9 @@ impl Default for Program {
                 json_error.push_str("| Failed to read: ./config/settings.json");
                 "[]".to_string()
             }
-        };
+        };        
+        println!("Loaded settings:\n{:?} ", settings);
+
         let settings_hmap: HashMap<String, bool> = match serde_json::from_str(&settings) {
             Ok(sp) => sp, 
             Err(_e) => {
@@ -705,7 +693,6 @@ impl Default for Program {
         };
 
         Self { 
-            runtime: Runtime::new().expect("Failed to create Tokio runtime"), 
             is_processing: false,
             current_tick: 0,
             installing_model: String::new(),
@@ -769,9 +756,17 @@ impl Default for Program {
     }
 }
 
-#[tokio::main]
-pub async fn main() -> iced::Result {
-     let icon = match image::ImageReader::open("./assets/icon.ico") {
+//#[tokio::main]
+pub  fn main() -> iced::Result {
+    unsafe {
+        #[cfg(target_os = "windows")]
+        std::env::set_var("WGPU_BACKEND", "gl");
+    } // Since some drivers on Windows are having 
+      // problems running the application, I'm forcing 
+      // OpenGL for windows users
+
+
+    let icon = match image::ImageReader::open("./assets/icon.ico") {
         Ok(image_reader) => {
             match image_reader.decode() {
                 Ok(img) => {
@@ -830,10 +825,10 @@ pub async fn main() -> iced::Result {
     };
     
     // begins the application
-    iced::application("Ollama GUI Interface", Program::update, Program::view)
-        .window_size(Size::new(700.0, 785.0))
-        .subscription(Program::subscription)
-        .theme(move |_| mode.clone())
-        .window(window_settings)
-        .run()
+    iced::application(|| Program::boot(), Program::update, Program::view)
+    .subscription(Program::subscription)
+    .theme(mode)
+    .window_size(Size::new(700.0, 785.0))
+    .window(window_settings)
+    .run()
 }
