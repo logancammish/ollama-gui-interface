@@ -430,8 +430,21 @@ impl Program {
                                 widget::text("Model to install (e.g. llama3.2:3b): "),
                                 model_install,
                             ),
+                            // Change batch tokens
+                            Space::new().height(Length::Fixed(10.0)),
+                            widget::row!(
+                                widget::text("Batch tokens (number of tokens to process before rendering | Recommended: 3): "),
+                                widget::slider(
+                                    1.0..=10.0, 
+                                    self.batch_tokens as f32,
+                                    |value| Message::ChangeBatchTokens(value as i32)
+                                ),
+                                Space::new().width(Length::Fixed(10.0)),
+                                widget::text(format!("{}", self.batch_tokens)).size(10.0)
+                            ),
                             // Change IP
                             Space::new().height(Length::Fixed(10.0)),
+
 
                             widget::row!(
                                 widget::text("Change Ollama IP address: "),

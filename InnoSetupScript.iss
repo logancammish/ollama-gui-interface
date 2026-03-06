@@ -1,6 +1,6 @@
 [Setup]
 AppName=ollama-gui
-AppVersion=0.3.6
+AppVersion=0.3.7
 DefaultDirName={pf}\ollama-gui
 DefaultGroupName=ollama-gui
 OutputDir=.

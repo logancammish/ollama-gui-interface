@@ -32,7 +32,7 @@ const MAX_TICK: i32 = 50; // The maximum tick in which the ticks will reset
 const BOT_LIST_TICK: i32 = 3; // The tick in which the Ollama bots list will be checked
 const TICK_MS: u64 = 200; // Tick rate
 ///
-const APP_VERSION: &str = "0.3.6"; // The current version of the application
+const APP_VERSION: &str = "0.3.7"; // The current version of the application
 
 #[derive(PartialEq, Clone, Copy)]
 pub enum GUIState {
@@ -45,6 +45,7 @@ pub enum GUIState {
 // message enum defined to send communications to the GUI logic
 #[derive(Debug, Clone)]
 enum Message {
+    ChangeBatchTokens(i32),
     AsyncResult(()),
     ListPrompt,
     ToggleThinking,
@@ -84,7 +85,8 @@ struct Program {
     channels: Channels, 
     user_information: UserInformation,
     response: Response,
-    prompt: Prompt
+    prompt: Prompt,
+    batch_tokens: i32
 }
 
 fn convert_port_to_u16(port: String) -> u16 {
@@ -123,31 +125,13 @@ impl Program {
 
         let (markdown_sender, markdown_receiver) = crossbeam_channel::unbounded();
         self.channels.markdown_channel_reciever = markdown_receiver;
-        let response_arc: Arc<Mutex<String>> = Arc::clone(&self.response.response_as_string);
         let (tx, rx) = std::sync::mpsc::channel::<GenerationResponse>();
         let channels: Channels = self.channels.clone();
+        let batch_tokens = self.batch_tokens.clone();
         // create a new thread to prevent blocking
         std::thread::spawn(move || {
-            for token in rx {
-                let mut resp: std::sync::MutexGuard<'_, String> = match response_arc.lock() {
-                    Ok(resp) => {
-                        resp
-                    }
-                    Err(e) => {
-                        eprintln!("Failed to get response: {}", e);
-                        Channels::send_request_to_channel(Arc::clone(&channels.debug_channel), 
-                            DebugMessage{
-                                message: "Failed to get response [responsearc failed]".to_string(),
-                                is_error: true
-                            }
-                        );
-                        return 
-                    }
-                };
-                resp.push_str(&token.response);
-                let text = resp.clone(); 
-                drop(resp);
-                let md = markdown::parse(&text).collect();
+            fn render(buffer: &String, markdown_sender: crossbeam_channel::Sender<Vec<markdown::Item>>, channels: Channels) {
+                let md = markdown::parse(&buffer.clone()).collect();
                 match markdown_sender.send(md) {
                     Ok(_) => {  }
                     Err(e) => {
@@ -160,6 +144,28 @@ impl Program {
                         );
                     }
                 };
+            }
+
+            let mut buffer = String::new();
+            let mut last_render_time = std::time::Instant::now();
+            let mut total_tokens = 0;
+
+            for token in rx {
+                buffer.push_str(&token.response); 
+                total_tokens += 1;
+
+                if !(total_tokens >= batch_tokens || last_render_time.elapsed().as_secs() >= 5) { 
+                    continue;
+                }
+
+                total_tokens = 0;
+                last_render_time = std::time::Instant::now();
+
+                render(&buffer, markdown_sender.clone(), channels.clone());
+            }
+            //flush the buffer one last time after the stream is done
+            if !buffer.is_empty() {
+                render(&buffer, markdown_sender.clone(), channels.clone());
             }
         });
 
@@ -296,6 +302,11 @@ impl Program {
             }
 
             Message::None => {
+                Task::none()
+            }
+
+            Message::ChangeBatchTokens(new_batch_tokens) => {
+                self.batch_tokens = new_batch_tokens;
                 Task::none()
             }
 
@@ -663,7 +674,9 @@ impl Default for Program {
                 json_error.push_str("| Failed to read: ./config/settings.json (bad formatting. reset to default)");
                 HashMap::from([
                     ("filtering".to_string(), false),
-                    ("logging".to_string(), false)
+                    ("logging".to_string(), false),
+                    ("dark_mode".to_string(), false),
+                    ("info_popup".to_string(), false)
                 ])
             }
         };
@@ -695,6 +708,7 @@ impl Default for Program {
         };
 
         Self { 
+            batch_tokens: 3,
             is_processing: false,
             current_tick: 0,
             installing_model: String::new(),
