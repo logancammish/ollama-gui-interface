@@ -28,7 +28,7 @@ use crate::app::{AppState, Channels, Correspondence, CurrentChat, DebugMessage, 
 /// at each corresponding tick.
 /// These are constants for the purpose of easy modification. 
 const VERSION_TICK: i32 = 2; // The tick in which the version of the program will be checked 
-const MAX_TICK: i32 = 250; // The maximum tick in which the ticks will reset
+const MAX_TICK: i32 = 50; // The maximum tick in which the ticks will reset
 const BOT_LIST_TICK: i32 = 3; // The tick in which the Ollama bots list will be checked
 const TICK_MS: u64 = 200; // Tick rate
 ///
@@ -145,7 +145,9 @@ impl Program {
                     }
                 };
                 resp.push_str(&token.response);
-                let md = markdown::parse(&resp).collect();
+                let text = resp.clone(); 
+                drop(resp);
+                let md = markdown::parse(&text).collect();
                 match markdown_sender.send(md) {
                     Ok(_) => {  }
                     Err(e) => {
