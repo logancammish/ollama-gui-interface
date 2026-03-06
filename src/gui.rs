@@ -278,7 +278,7 @@ impl Program {
                 }
                 GUIState::Settings => {
                     let user_information = self.user_information.clone();
-                    let ip = self.user_information.ip_address.clone();
+                    //let ip = self.user_information.ip_address.clone();
                     let bots_list = self.app_state.bots_list.lock().unwrap().clone();
                     let prompts_list = self.system_prompt.system_prompts_as_vec.lock().unwrap().clone();
                     
