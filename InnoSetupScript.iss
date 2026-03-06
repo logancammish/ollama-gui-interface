@@ -9,10 +9,10 @@ Compression=lzma
 SolidCompression=yes
 
 [Files]
-Source: "C:\Users\L.J.Cammish\OneDrive - Saint Kentigern\Documents\ollama-gui\target\release\ollama-gui.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "C:\Users\L.J.Cammish\OneDrive - Saint Kentigern\Documents\ollama-gui\assets\*"; DestDir: "{app}\assets"; Flags: recursesubdirs createallsubdirs
-Source: "C:\Users\L.J.Cammish\OneDrive - Saint Kentigern\Documents\ollama-gui\config\*"; DestDir: "{app}\config"; Flags: recursesubdirs createallsubdirs
-Source: "C:\Users\L.J.Cammish\OneDrive - Saint Kentigern\Documents\ollama-gui\output\*"; DestDir: "{app}\output"; Flags: recursesubdirs createallsubdirs
+Source: "C:\Users\logan\OneDrive\Documents\ollama-gui\target\release\ollama-gui.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "C:\Users\logan\OneDrive\Documents\ollama-gui\assets\*"; DestDir: "{app}\assets"; Flags: recursesubdirs createallsubdirs
+Source: "C:\Users\logan\OneDrive\Documents\ollama-gui\config\*"; DestDir: "{app}\config"; Flags: recursesubdirs createallsubdirs
+Source: "C:\Users\logan\OneDrive\Documents\ollama-gui\output\*"; DestDir: "{app}\output"; Flags: recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\ollama-gui"; Filename: "{app}\ollama-gui.exe"
