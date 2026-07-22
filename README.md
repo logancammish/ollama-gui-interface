@@ -32,7 +32,9 @@ However, as far as Ollama `1.17.7`:
 | Model control | Use local Ollama models or connect to an external Ollama server |
 | Thinking toggle | Enable or disable thinking where supported |
 | System prompts | Choose and customize system prompts |
-| Chat history | View, edit, and manage conversation history |
+| Saved chats | View, reopen, and delete conversations from the chat sidebar |
+| Chat storage | Choose where saved chats are stored and see the full folder path in Settings |
+| Temporary chats | Start conversations that are not written to saved-chat storage |
 | Logs | Easily access and toggle logs |
 | Filtering | Optional text filtering support |
 | Settings | Customizable interface and behavior |
@@ -52,6 +54,8 @@ The easiest way to use the app is to download the executable from the latest rel
 2. Download the latest executable  
    Go to the Releases page:  
    https://github.com/logancammish/ollama-gui-interface/releases
+
+   On Windows, download `ollama-gui-win64-installer.exe` if you want the standard installer.
 
 3. Run the executable  
    The application should start normally.
@@ -112,6 +116,20 @@ target/release
 | Windows | Officially supported |
 | Linux | Officially supported (Wayland) |
 | macOS | Not officially supported or tested |
+
+---
+
+## Saved chats
+
+Conversations are saved locally as `chats.json`. The current folder is shown under **Settings → Chat storage**, where you can choose a different folder at any time.
+
+On Linux, the default folder is:
+
+```text
+~/.local/share/ollama-gui/chats
+```
+
+If `XDG_DATA_HOME` is set, the app uses `$XDG_DATA_HOME/ollama-gui/chats` instead. Existing conversations from the older `output/chats.json` location are detected automatically. Temporary chats are not saved.
 
 ---
 

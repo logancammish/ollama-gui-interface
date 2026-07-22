@@ -1,65 +1,63 @@
 use iced::{
-    alignment::{self, Horizontal},
-    border::Radius,
-    widget::{self, container, Space},
     Background, Border, Color, Element, Length, Shadow, Theme, Vector,
+    alignment::Horizontal,
+    border::Radius,
+    widget::{self, Space, container},
 };
 
 use iced_selection::markdown as selectable_markdown;
 use iced_widget::{container::Style, markdown};
 
-use crate::{Correspondence, GUIState, Message, Program};
+use crate::{
+    ChatImage, Correspondence, GUIState, Message, Program, ThinkingLevel, split_thinking_text,
+};
 
 fn rgb(r: u8, g: u8, b: u8) -> Color {
-    Color::from_rgb(
-        r as f32 / 255.0,
-        g as f32 / 255.0,
-        b as f32 / 255.0,
-    )
+    Color::from_rgb(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0)
 }
 
 fn app_bg() -> Color {
-    rgb(7, 9, 14)
+    rgb(8, 11, 18)
 }
 
 fn panel() -> Color {
-    rgb(15, 19, 29)
+    rgb(14, 18, 28)
 }
 
 fn panel_soft() -> Color {
-    rgb(21, 26, 39)
+    rgb(20, 25, 38)
 }
 
 fn panel_lifted() -> Color {
-    rgb(28, 34, 49)
+    rgb(27, 34, 50)
 }
 
 fn border_soft() -> Color {
-    rgb(50, 61, 84)
+    rgb(43, 53, 73)
 }
 
 fn border_bright() -> Color {
-    rgb(82, 102, 145)
+    rgb(83, 101, 135)
 }
 
 fn text_main() -> Color {
-    rgb(240, 245, 255)
+    rgb(238, 241, 246)
 }
 
 fn text_muted() -> Color {
-    rgb(158, 170, 195)
+    rgb(165, 177, 198)
 }
 
 fn text_faint() -> Color {
-    rgb(110, 122, 148)
+    rgb(128, 139, 154)
 }
 
 fn accent() -> Color {
-    rgb(82, 140, 255)
+    rgb(111, 139, 255)
 }
 
 fn accent_2() -> Color {
-    rgb(108, 226, 209)
+    rgb(91, 211, 255)
 }
 
 fn danger() -> Color {
@@ -67,11 +65,18 @@ fn danger() -> Color {
 }
 
 fn success() -> Color {
-    rgb(93, 225, 144)
+    rgb(91, 203, 151)
 }
 
 fn warning() -> Color {
     rgb(255, 190, 94)
+}
+
+fn shadow_color() -> Color {
+    Color {
+        a: 0.42,
+        ..rgb(0, 0, 0)
+    }
 }
 
 fn app_background_style(_theme: &Theme) -> Style {
@@ -96,12 +101,12 @@ fn panel_style(_theme: &Theme) -> Style {
         border: Border {
             color: border_soft(),
             width: 1.0,
-            radius: Radius::from(20.0),
+            radius: Radius::from(16.0),
         },
         shadow: Shadow {
-            color: rgb(0, 0, 0),
-            offset: Vector::from([0.0, 14.0]),
-            blur_radius: 30.0,
+            color: shadow_color(),
+            offset: Vector::from([0.0, 10.0]),
+            blur_radius: 26.0,
         },
     }
 }
@@ -114,12 +119,50 @@ fn card_style(_theme: &Theme) -> Style {
         border: Border {
             color: border_soft(),
             width: 1.0,
-            radius: Radius::from(18.0),
+            radius: Radius::from(16.0),
         },
         shadow: Shadow {
-            color: rgb(0, 0, 0),
+            color: shadow_color(),
             offset: Vector::from([0.0, 8.0]),
             blur_radius: 20.0,
+        },
+    }
+}
+
+fn pick_list_style(_theme: &Theme, status: widget::pick_list::Status) -> widget::pick_list::Style {
+    let active = !matches!(status, widget::pick_list::Status::Active);
+    widget::pick_list::Style {
+        text_color: text_main(),
+        placeholder_color: text_faint(),
+        handle_color: if active { accent() } else { text_muted() },
+        background: Background::Color(if active {
+            rgb(29, 37, 57)
+        } else {
+            panel_soft()
+        }),
+        border: Border {
+            color: if active { accent() } else { border_soft() },
+            width: if active { 1.5 } else { 1.0 },
+            radius: Radius::from(12.0),
+        },
+    }
+}
+
+fn pick_list_menu_style(_theme: &Theme) -> widget::overlay::menu::Style {
+    widget::overlay::menu::Style {
+        background: Background::Color(panel_lifted()),
+        border: Border {
+            color: border_bright(),
+            width: 1.0,
+            radius: Radius::from(14.0),
+        },
+        text_color: text_main(),
+        selected_text_color: Color::WHITE,
+        selected_background: Background::Color(rgb(49, 67, 122)),
+        shadow: Shadow {
+            color: shadow_color(),
+            offset: Vector::from([0.0, 8.0]),
+            blur_radius: 22.0,
         },
     }
 }
@@ -138,18 +181,57 @@ fn flat_card_style(_theme: &Theme) -> Style {
     }
 }
 
+fn chat_entry_style(active: bool) -> impl Fn(&Theme) -> Style {
+    move |_theme| Style {
+        snap: true,
+        text_color: Some(text_main()),
+        background: Some(Background::Color(if active {
+            rgb(49, 67, 122)
+        } else {
+            panel_lifted()
+        })),
+        border: Border {
+            color: if active { accent() } else { border_soft() },
+            width: 1.0,
+            radius: Radius::from(13.0),
+        },
+        shadow: Shadow::default(),
+    }
+}
+
+fn chat_title_button_style(
+    _theme: &Theme,
+    status: widget::button::Status,
+) -> widget::button::Style {
+    widget::button::Style {
+        snap: true,
+        background: match status {
+            widget::button::Status::Hovered => {
+                Some(Background::Color(Color::from_rgba8(255, 255, 255, 0.05)))
+            }
+            _ => None,
+        },
+        text_color: text_main(),
+        border: Border {
+            radius: Radius::from(10.0),
+            ..Border::default()
+        },
+        shadow: Shadow::default(),
+    }
+}
+
 fn input_shell_style(_theme: &Theme) -> Style {
     Style {
         snap: true,
         text_color: Some(text_main()),
-        background: Some(Background::Color(rgb(12, 16, 25))),
+        background: Some(Background::Color(panel_soft())),
         border: Border {
-            color: rgb(44, 55, 79),
+            color: border_soft(),
             width: 1.0,
             radius: Radius::from(18.0),
         },
         shadow: Shadow {
-            color: rgb(0, 0, 0),
+            color: shadow_color(),
             offset: Vector::from([0.0, 8.0]),
             blur_radius: 18.0,
         },
@@ -160,14 +242,14 @@ fn user_bubble_style(_theme: &Theme) -> Style {
     Style {
         snap: true,
         text_color: Some(Color::WHITE),
-        background: Some(Background::Color(rgb(48, 93, 190))),
+        background: Some(Background::Color(rgb(40, 52, 99))),
         border: Border {
-            color: rgb(88, 139, 250),
+            color: accent(),
             width: 1.0,
             radius: Radius::from(18.0),
         },
         shadow: Shadow {
-            color: rgb(0, 0, 0),
+            color: shadow_color(),
             offset: Vector::from([0.0, 8.0]),
             blur_radius: 18.0,
         },
@@ -178,14 +260,14 @@ fn bot_bubble_style(_theme: &Theme) -> Style {
     Style {
         snap: true,
         text_color: Some(text_main()),
-        background: Some(Background::Color(rgb(23, 28, 42))),
+        background: Some(Background::Color(panel_soft())),
         border: Border {
-            color: rgb(54, 66, 94),
+            color: border_soft(),
             width: 1.0,
             radius: Radius::from(18.0),
         },
         shadow: Shadow {
-            color: rgb(0, 0, 0),
+            color: shadow_color(),
             offset: Vector::from([0.0, 8.0]),
             blur_radius: 18.0,
         },
@@ -245,9 +327,12 @@ fn button_visual(
     status: widget::button::Status,
 ) -> widget::button::Style {
     let (background, border, offset_y, blur_radius) = match status {
-        widget::button::Status::Hovered => {
-            (brighten(background, 0.035), brighten(border, 0.045), 4.0, 12.0)
-        }
+        widget::button::Status::Hovered => (
+            brighten(background, 0.035),
+            brighten(border, 0.045),
+            4.0,
+            12.0,
+        ),
         widget::button::Status::Pressed => {
             (darken(background, 0.045), brighten(border, 0.025), 1.0, 5.0)
         }
@@ -267,7 +352,7 @@ fn button_visual(
             radius: Radius::from(13.0),
         },
         shadow: Shadow {
-            color: rgb(0, 0, 0),
+            color: shadow_color(),
             offset: Vector::from([0.0, offset_y]),
             blur_radius,
         },
@@ -275,109 +360,114 @@ fn button_visual(
 }
 
 fn primary_button<'a>(label: &'a str, message: Message) -> Element<'a, Message> {
-    widget::button(
-        widget::text(label)
-            .size(14)
-            .align_x(Horizontal::Center),
-    )
-    .padding(12)
-    .style(|_theme, _status| {
-        button_visual(
-            rgb(70, 125, 255),
-            rgb(107, 158, 255),
-            Color::WHITE,
-            _status,
-        )
-    })
-    .on_press(message)
-    .into()
+    widget::button(widget::text(label).size(14).align_x(Horizontal::Center))
+        .padding(12)
+        .style(|_theme, _status| button_visual(rgb(75, 84, 205), accent(), Color::WHITE, _status))
+        .on_press(message)
+        .into()
 }
 
 fn secondary_button<'a>(label: &'a str, message: Message) -> Element<'a, Message> {
-    widget::button(
-        widget::text(label)
-            .size(14)
-            .align_x(Horizontal::Center),
-    )
-    .padding(12)
-    .style(|_theme, _status| {
-        button_visual(
-            rgb(28, 35, 52),
-            rgb(65, 78, 110),
-            text_main(),
-            _status,
-        )
-    })
-    .on_press(message)
-    .into()
+    widget::button(widget::text(label).size(14).align_x(Horizontal::Center))
+        .padding(12)
+        .style(|_theme, _status| button_visual(panel_soft(), border_soft(), text_main(), _status))
+        .on_press(message)
+        .into()
 }
 
 fn danger_button<'a>(label: &'a str, message: Message) -> Element<'a, Message> {
-    widget::button(
-        widget::text(label)
-            .size(14)
-            .align_x(Horizontal::Center),
-    )
-    .padding(12)
-    .style(|_theme, _status| {
-        button_visual(
-            rgb(104, 38, 55),
-            rgb(185, 76, 99),
-            Color::WHITE,
-            _status,
-        )
-    })
-    .on_press(message)
-    .into()
+    widget::button(widget::text(label).size(14).align_x(Horizontal::Center))
+        .padding(12)
+        .style(|_theme, _status| {
+            button_visual(rgb(104, 38, 55), rgb(185, 76, 99), Color::WHITE, _status)
+        })
+        .on_press(message)
+        .into()
 }
 
 fn mini_button<'a>(label: &'a str, message: Message) -> Element<'a, Message> {
-    widget::button(
-        widget::text(label)
-            .size(12)
-            .align_x(Horizontal::Center),
-    )
-    .padding(7)
-    .style(|_theme, _status| {
-        button_visual(
-            rgb(28, 35, 52),
-            rgb(65, 78, 110),
-            text_muted(),
-            _status,
+    widget::button(widget::text(label).size(12).align_x(Horizontal::Center))
+        .padding(7)
+        .style(|_theme, _status| button_visual(panel_soft(), border_soft(), text_muted(), _status))
+        .on_press(message)
+        .into()
+}
+
+fn thinking_control<'a>(selected: ThinkingLevel) -> Element<'a, Message> {
+    let description = match selected {
+        ThinkingLevel::Off => "Fastest · no extra reasoning",
+        ThinkingLevel::Low => "Quick reasoning for everyday questions",
+        ThinkingLevel::Medium => "Balanced for multi-step tasks",
+        ThinkingLevel::High => "Most thorough · slower responses",
+    };
+
+    widget::column![
+        widget::pick_list(
+            [
+                ThinkingLevel::Off,
+                ThinkingLevel::Low,
+                ThinkingLevel::Medium,
+                ThinkingLevel::High
+            ],
+            Some(selected),
+            Message::ThinkingLevelChange,
         )
-    })
-    .on_press(message)
+        .placeholder("Thinking")
+        .padding([12, 14])
+        .text_size(14)
+        .style(pick_list_style)
+        .menu_style(pick_list_menu_style)
+        .width(Length::Fill),
+        Space::new().height(Length::Fixed(6.0)),
+        widget::text(description).size(11).color(text_faint()),
+    ]
+    .into()
+}
+
+fn image_preview<'a>(image: &ChatImage, removable: bool) -> Element<'a, Message> {
+    let preview = widget::image(image.preview_handle.clone())
+        .width(Length::Fixed(160.0))
+        .height(Length::Fixed(110.0))
+        .content_fit(iced::ContentFit::Contain);
+    let footer: Element<Message> = if removable {
+        widget::row![
+            widget::text(image.name.clone())
+                .size(11)
+                .color(text_muted()),
+            Space::new().width(Length::Fill),
+            mini_button("Remove", Message::RemoveImage),
+        ]
+        .into()
+    } else {
+        widget::text(format!("{} · {}", image.name, image.mime_type))
+            .size(11)
+            .color(text_muted())
+            .into()
+    };
+    container(widget::column![
+        preview,
+        Space::new().height(Length::Fixed(6.0)),
+        footer
+    ])
+    .padding(8)
+    .style(flat_card_style)
     .into()
 }
 
 fn copy_code_button<'a>(code: String, copied: bool) -> Element<'a, Message> {
     let label = if copied { "Copied ✓" } else { "Copy code" };
 
-    widget::button(
-        widget::text(label)
-            .size(12)
-            .align_x(Horizontal::Center),
-    )
-    .padding(8)
-    .style(move |_theme, status| {
-        if copied {
-            button_visual(
-                rgb(31, 92, 63),
-                rgb(93, 225, 144),
-                Color::WHITE,
-                status,
-            )
-        } else {
-            button_visual(
-                rgb(28, 35, 52),
-                rgb(65, 78, 110),
-                text_muted(),
-                status,
-            )
-        }
-    })
-    .on_press(Message::CopyPressed(code))
-    .into()
+    widget::button(widget::text(label).size(12).align_x(Horizontal::Center))
+        .padding(8)
+        .style(move |_theme, status| {
+            if copied {
+                button_visual(rgb(31, 92, 63), rgb(93, 225, 144), Color::WHITE, status)
+            } else {
+                button_visual(rgb(28, 35, 52), rgb(65, 78, 110), text_muted(), status)
+            }
+        })
+        .on_press(Message::CopyPressed(code))
+        .into()
 }
 
 fn text_input_style(
@@ -385,64 +475,46 @@ fn text_input_style(
     _status: widget::text_input::Status,
 ) -> widget::text_input::Style {
     widget::text_input::Style {
-        background: Background::Color(rgb(10, 14, 22)),
+        background: Background::Color(panel_soft()),
         border: Border {
-            color: rgb(58, 70, 100),
+            color: border_soft(),
             width: 1.0,
             radius: Radius::from(14.0),
         },
         icon: text_muted(),
-        placeholder: rgb(112, 124, 148),
+        placeholder: text_faint(),
         value: text_main(),
-        selection: rgb(80, 130, 240),
+        selection: accent(),
     }
 }
 
 fn section_title<'a>(title: &'a str, subtitle: &'a str) -> Element<'a, Message> {
     widget::column![
-        widget::text(title)
-            .size(27)
-            .color(text_main()),
+        widget::text(title).size(27).color(text_main()),
         Space::new().height(Length::Fixed(5.0)),
-        widget::text(subtitle)
-            .size(14)
-            .color(text_muted()),
+        widget::text(subtitle).size(14).color(text_muted()),
     ]
     .into()
 }
 
 fn setting_label<'a>(title: &'a str, subtitle: &'a str) -> Element<'a, Message> {
     widget::column![
-        widget::text(title)
-            .size(16)
-            .color(text_main()),
+        widget::text(title).size(16).color(text_main()),
         Space::new().height(Length::Fixed(4.0)),
-        widget::text(subtitle)
-            .size(12)
-            .color(text_muted()),
+        widget::text(subtitle).size(12).color(text_muted()),
     ]
     .width(Length::Fill)
     .into()
 }
 
 fn help_card<'a>(title: &'a str, body: &'a str, color: Color) -> Element<'a, Message> {
-    container(
-        widget::column![
-            container(
-                widget::text(title)
-                    .size(16)
-                    .color(text_main())
-            )
+    container(widget::column![
+        container(widget::text(title).size(16).color(text_main()))
             .padding(8)
             .style(chip_style(color)),
-
-            Space::new().height(Length::Fixed(10.0)),
-
-            widget::text(body)
-                .size(14)
-                .color(text_muted()),
-        ]
-    )
+        Space::new().height(Length::Fixed(10.0)),
+        widget::text(body).size(14).color(text_muted()),
+    ])
     .padding(16)
     .width(Length::Fill)
     .style(flat_card_style)
@@ -454,26 +526,17 @@ fn markdown_with_code_copy<'a>(
     text_size: f32,
     copied_text: Option<&String>,
 ) -> Element<'a, Message> {
-    let settings = iced::widget::markdown::Settings::with_text_size(
-        text_size,
-        Theme::Dark,
-    );
+    let settings = iced::widget::markdown::Settings::with_text_size(text_size, Theme::Dark);
 
     let mut children: Vec<Element<'a, Message>> = Vec::new();
 
     for item in items.iter() {
         children.push(
-            selectable_markdown(
-                std::iter::once(item),
-                settings.clone(),
-            )
-            .map(|_| Message::None),
+            selectable_markdown(std::iter::once(item), settings.clone()).map(|_| Message::None),
         );
 
         if let markdown::Item::CodeBlock { code, .. } = item {
-            let copied = copied_text
-                .map(|copied| copied == code)
-                .unwrap_or(false);
+            let copied = copied_text.map(|copied| copied == code).unwrap_or(false);
 
             children.push(
                 widget::row![
@@ -491,38 +554,41 @@ fn markdown_with_code_copy<'a>(
 }
 
 fn message_bubble<'a>(
+    index: usize,
     message: Correspondence,
     parsed_markdown: Option<&'a Vec<markdown::Item>>,
     text_size: f32,
     model_name: String,
     copied_text: Option<&String>,
+    thinking_expanded: bool,
 ) -> Element<'a, Message> {
     match message {
-        Correspondence::User(text) => {
-            widget::row![
-                Space::new().width(Length::Fill),
-                container(
-                    widget::column![
-                        widget::text("You")
-                            .size(12)
-                            .color(rgb(205, 221, 255))
-                            .align_x(Horizontal::Right),
-                        Space::new().height(Length::Fixed(6.0)),
-                        widget::text(text)
-                            .size(text_size)
-                            .align_x(Horizontal::Right),
-                    ]
-                )
-                .padding(14)
-                .width(Length::Shrink)
-                .style(user_bubble_style),
-                Space::new().width(Length::Fixed(8.0)),
-            ]
-            .into()
-        }
+        Correspondence::User { text, image } => widget::row![
+            Space::new().width(Length::Fill),
+            container(widget::column![
+                widget::text("You")
+                    .size(12)
+                    .color(rgb(205, 221, 255))
+                    .align_x(Horizontal::Right),
+                Space::new().height(Length::Fixed(6.0)),
+                if let Some(image) = image.as_ref() {
+                    image_preview(image, false)
+                } else {
+                    widget::column![].into()
+                },
+                widget::text(text)
+                    .size(text_size)
+                    .align_x(Horizontal::Right),
+            ])
+            .padding(14)
+            .width(Length::Shrink)
+            .style(user_bubble_style),
+            Space::new().width(Length::Fixed(8.0)),
+        ]
+        .into(),
 
         Correspondence::Bot(text) => {
-            let fallback_text = text.clone();
+            let (thinking, fallback_text) = split_thinking_text(&text);
 
             let body: Element<'a, Message> = if let Some(parsed) = parsed_markdown {
                 markdown_with_code_copy(parsed, text_size, copied_text)
@@ -534,20 +600,46 @@ fn message_bubble<'a>(
                     .into()
             };
 
+            let reasoning: Element<'a, Message> = if thinking.is_empty() {
+                widget::column![].into()
+            } else {
+                let label = if thinking_expanded {
+                    "▾ Hide thinking"
+                } else {
+                    "▸ Show thinking"
+                };
+                let details: Element<'a, Message> = if thinking_expanded {
+                    container(
+                        widget::text(thinking)
+                            .size(text_size - 1.0)
+                            .color(text_muted()),
+                    )
+                    .padding(12)
+                    .width(Length::Fill)
+                    .style(flat_card_style)
+                    .into()
+                } else {
+                    widget::column![].into()
+                };
+                widget::column![
+                    mini_button(label, Message::ToggleThinking(index)),
+                    details,
+                    Space::new().height(Length::Fixed(7.0)),
+                ]
+                .into()
+            };
+
             widget::row![
                 Space::new().width(Length::Fixed(8.0)),
-                container(
-                    widget::column![
-                        widget::row![
-                            widget::text(model_name)
-                                .size(12)
-                                .color(accent_2()),
-                            Space::new().width(Length::Fill),
-                        ],
-                        Space::new().height(Length::Fixed(7.0)),
-                        body,
-                    ]
-                )
+                container(widget::column![
+                    widget::row![
+                        widget::text(model_name).size(12).color(accent_2()),
+                        Space::new().width(Length::Fill),
+                    ],
+                    Space::new().height(Length::Fixed(7.0)),
+                    reasoning,
+                    body,
+                ])
                 .padding(14)
                 .width(Length::Fill)
                 .style(bot_bubble_style),
@@ -673,21 +765,11 @@ impl Program {
             GUIState::Main => {
                 let user_information = self.user_information.clone();
                 let bots_list = self.app_state.bots_list.lock().unwrap().clone();
-                let prompts_list = self
-                    .system_prompt
-                    .system_prompts_as_vec
-                    .lock()
-                    .unwrap()
-                    .clone();
                 let copied_text = self.last_copied_text.clone();
                 let local_ollamastate = self.app_state.ollama_state.lock().unwrap().clone();
 
-                let response_text = self
-                    .response
-                    .response_as_string
-                    .lock()
-                    .unwrap()
-                    .clone();
+                let response_text = self.response.response_as_string.lock().unwrap().clone();
+                let (live_thinking, _) = split_thinking_text(&response_text);
 
                 let chat_messages = {
                     let chat_history = self.user_information.chat_history.lock().unwrap();
@@ -703,10 +785,13 @@ impl Program {
                     })
                     .unwrap_or_default();
 
+                let (_, latest_visible_bot_text) = split_thinking_text(&latest_bot_text);
+                let (_, live_visible_response) = split_thinking_text(&response_text);
+
                 let latest_response_to_copy = if !response_text.trim().is_empty() {
-                    response_text.clone()
+                    live_visible_response
                 } else {
-                    latest_bot_text
+                    latest_visible_bot_text
                 };
 
                 let selected_model = self.user_information.model.clone();
@@ -739,11 +824,13 @@ impl Program {
 
                         vec![
                             message_bubble(
+                                index,
                                 message.clone(),
                                 parsed_markdown,
                                 user_information.text_size,
                                 message_model_name,
                                 copied_text.as_ref(),
+                                self.expanded_thinking.contains(&index),
                             ),
                             Space::new().height(Length::Fixed(10.0)).into(),
                         ]
@@ -770,7 +857,7 @@ impl Program {
                     container(
                         widget::text("No models installed")
                             .size(13)
-                            .color(text_muted())
+                            .color(text_muted()),
                     )
                     .padding(10)
                     .style(chip_style(danger()))
@@ -781,106 +868,137 @@ impl Program {
                         selected_model.clone(),
                         Message::ModelChange,
                     )
-                    .width(Length::Fixed(250.0))
+                    .padding([12, 14])
+                    .text_size(14)
+                    .style(pick_list_style)
+                    .menu_style(pick_list_menu_style)
+                    .width(Length::Fill)
                     .into()
                 };
 
-                let system_prompt_selector: Element<Message> = if prompts_list.is_empty() {
-                    container(
-                        widget::text("No prompts found")
-                            .size(13)
-                            .color(text_muted())
-                    )
-                    .padding(10)
-                    .style(chip_style(warning()))
-                    .into()
-                } else {
-                    widget::pick_list(
-                        prompts_list.clone(),
-                        self.system_prompt.system_prompt.clone(),
-                        Message::SystemPromptChange,
-                    )
-                    .width(Length::Fixed(230.0))
-                    .into()
-                };
+                let thinking_selector: Element<Message> = widget::pick_list(
+                    [
+                        ThinkingLevel::Off,
+                        ThinkingLevel::Low,
+                        ThinkingLevel::Medium,
+                        ThinkingLevel::High,
+                    ],
+                    Some(self.user_information.thinking_level),
+                    Message::ThinkingLevelChange,
+                )
+                .placeholder("Thinking")
+                .padding([12, 14])
+                .text_size(14)
+                .style(pick_list_style)
+                .menu_style(pick_list_menu_style)
+                .width(Length::Fixed(132.0))
+                .into();
 
-                let live_response: Element<Message> = if self.is_processing
-                    || !response_text.trim().is_empty()
-                {
-                    let response_model_name = self
-                        .active_response_model_name
-                        .clone()
-                        .unwrap_or_else(|| active_model_name.clone());
+                let live_response: Element<Message> =
+                    if self.is_processing || !response_text.trim().is_empty() {
+                        let response_model_name = self
+                            .active_response_model_name
+                            .clone()
+                            .unwrap_or_else(|| active_model_name.clone());
 
-                    let label = if self.is_processing {
-                        format!("{} is responding...", response_model_name)
-                    } else {
-                        response_model_name
-                    };
+                        let label = if self.is_processing {
+                            format!("{} is responding...", response_model_name)
+                        } else {
+                            response_model_name
+                        };
 
-                    widget::row![
-                        Space::new().width(Length::Fixed(8.0)),
-                        container(
+                        let live_reasoning: Element<Message> = if live_thinking.is_empty() {
+                            widget::column![].into()
+                        } else {
+                            let expanded = self.expanded_thinking.contains(&usize::MAX);
+                            let details: Element<Message> = if expanded {
+                                container(
+                                    widget::text(live_thinking.clone())
+                                        .size(user_information.text_size - 1.0)
+                                        .color(text_muted()),
+                                )
+                                .padding(12)
+                                .width(Length::Fill)
+                                .style(flat_card_style)
+                                .into()
+                            } else {
+                                widget::column![].into()
+                            };
                             widget::column![
+                                mini_button(
+                                    if expanded {
+                                        "▾ Hide thinking"
+                                    } else {
+                                        "▸ Show thinking"
+                                    },
+                                    Message::ToggleThinking(usize::MAX),
+                                ),
+                                details,
+                                Space::new().height(Length::Fixed(7.0)),
+                            ]
+                            .into()
+                        };
+
+                        widget::row![
+                            Space::new().width(Length::Fixed(8.0)),
+                            container(widget::column![
                                 widget::row![
-                                    widget::text(label)
-                                        .size(12)
-                                        .color(accent_2()),
+                                    widget::text(label).size(12).color(accent_2()),
                                     Space::new().width(Length::Fill),
                                 ],
                                 Space::new().height(Length::Fixed(8.0)),
+                                live_reasoning,
                                 markdown_with_code_copy(
                                     &self.response.parsed_markdown,
                                     user_information.text_size,
                                     copied_text.as_ref(),
                                 ),
-                            ]
-                        )
-                        .padding(14)
-                        .width(Length::Fill)
-                        .style(bot_bubble_style),
-                        Space::new().width(Length::Fixed(42.0)),
-                    ]
-                    .into()
-                } else if chat_messages.is_empty() {
-                    container(
-                        widget::column![
-                            widget::text("Ready when you are.")
-                                .size(22)
-                                .color(text_main())
-                                .align_x(Horizontal::Center),
-                            Space::new().height(Length::Fixed(8.0)),
-                            widget::text("Choose a model, type a prompt, and start chatting locally.")
+                            ])
+                            .padding(14)
+                            .width(Length::Fill)
+                            .style(bot_bubble_style),
+                            Space::new().width(Length::Fixed(42.0)),
+                        ]
+                        .into()
+                    } else if chat_messages.is_empty() {
+                        container(
+                            widget::column![
+                                widget::text("Ready when you are.")
+                                    .size(22)
+                                    .color(text_main())
+                                    .align_x(Horizontal::Center),
+                                Space::new().height(Length::Fixed(8.0)),
+                                widget::text(
+                                    "Choose a model, type a prompt, and start chatting locally."
+                                )
                                 .size(14)
                                 .color(text_muted())
                                 .align_x(Horizontal::Center),
-                        ]
-                        .align_x(Horizontal::Center)
-                    )
-                    .padding(30)
-                    .width(Length::Fill)
-                    .style(flat_card_style)
-                    .into()
-                } else {
-                    widget::column![].into()
-                };
+                            ]
+                            .align_x(Horizontal::Center),
+                        )
+                        .padding(30)
+                        .width(Length::Fill)
+                        .style(flat_card_style)
+                        .into()
+                    } else {
+                        widget::column![].into()
+                    };
 
                 let offline_hint: Element<Message> = if !online {
-                    container(
-                        widget::row![
-                            widget::column![
-                                widget::text("Ollama was not detected.")
-                                    .size(14)
-                                    .color(text_main()),
-                                Space::new().height(Length::Fixed(3.0)),
-                                widget::text("Install Ollama or check your connection settings.")
-                                    .size(12)
-                                    .color(text_muted()),
-                            ]
-                            .width(Length::Fill),
-                            secondary_button("Install Ollama", Message::InstallationPrompt),
+                    container(widget::row![
+                        widget::column![
+                            widget::text("Ollama was not detected.")
+                                .size(14)
+                                .color(text_main()),
+                            Space::new().height(Length::Fixed(3.0)),
+                            widget::text("Install Ollama or check your connection settings.")
+                                .size(12)
+                                .color(text_muted()),
                         ]
-                    )
+                        .width(Length::Fill),
+                        secondary_button("Install Ollama", Message::InstallationPrompt),
+                    ])
                     .padding(14)
                     .width(Length::Fill)
                     .style(flat_card_style)
@@ -890,21 +1008,19 @@ impl Program {
                 };
 
                 let missing_bots_hint: Element<Message> = if bots_list.is_empty() {
-                    container(
-                        widget::row![
-                            widget::column![
-                                widget::text("No models were detected.")
-                                    .size(14)
-                                    .color(text_main()),
-                                Space::new().height(Length::Fixed(3.0)),
-                                widget::text("Install a model before sending prompts.")
-                                    .size(12)
-                                    .color(text_muted()),
-                            ]
-                            .width(Length::Fill),
-                            secondary_button("Find models", Message::ListPrompt),
+                    container(widget::row![
+                        widget::column![
+                            widget::text("No models were detected.")
+                                .size(14)
+                                .color(text_main()),
+                            Space::new().height(Length::Fixed(3.0)),
+                            widget::text("Install a model before sending prompts.")
+                                .size(12)
+                                .color(text_muted()),
                         ]
-                    )
+                        .width(Length::Fill),
+                        secondary_button("Find models", Message::ListPrompt),
+                    ])
                     .padding(14)
                     .width(Length::Fill)
                     .style(flat_card_style)
@@ -913,46 +1029,137 @@ impl Program {
                     widget::column![].into()
                 };
 
+                let chat_sidebar: Element<Message> = if self.chat_menu_open {
+                    let mut entries: Vec<Element<Message>> = vec![
+                        primary_button("＋ New chat", Message::NewChat),
+                        Space::new().height(Length::Fixed(6.0)).into(),
+                        secondary_button(
+                            if self.temporary_chat {
+                                "Leave temporary chat"
+                            } else {
+                                "Temporary chat"
+                            },
+                            Message::ToggleTemporaryChat,
+                        ),
+                        Space::new().height(Length::Fixed(14.0)).into(),
+                        widget::text(if self.temporary_chat {
+                            "Temporary · not saved"
+                        } else {
+                            "Saved chats"
+                        })
+                        .size(13)
+                        .color(text_muted())
+                        .into(),
+                    ];
+                    for saved in &self.saved_chats {
+                        let selected = saved.id == self.current_chat_id;
+                        entries.push(
+                            container(widget::row![
+                                widget::button(widget::text(saved.title.clone()).size(13))
+                                    .on_press(Message::OpenChat(saved.id.clone()))
+                                    .style(chat_title_button_style)
+                                    .width(Length::Fill),
+                                mini_button(
+                                    if saved.pinned { "Unpin" } else { "Pin" },
+                                    Message::ToggleChatPin(saved.id.clone()),
+                                ),
+                                mini_button("×", Message::DeleteChat(saved.id.clone())),
+                            ])
+                            .padding(4)
+                            .width(Length::Fill)
+                            .style(chat_entry_style(selected))
+                            .into(),
+                        );
+                    }
+                    container(widget::column![
+                        widget::row![
+                            widget::text("Chats").size(18).color(text_main()),
+                            Space::new().width(Length::Fill),
+                            mini_button("‹", Message::ToggleChatMenu),
+                        ],
+                        Space::new().height(Length::Fixed(10.0)),
+                        widget::scrollable(
+                            widget::Column::with_children(entries).spacing(iced::Pixels(6.0))
+                        ),
+                    ])
+                    .padding(10)
+                    .width(Length::Fixed(270.0))
+                    .height(Length::Fill)
+                    .style(panel_style)
+                    .into()
+                } else {
+                    container(widget::column![mini_button("☰", Message::ToggleChatMenu)])
+                        .padding(6)
+                        .width(Length::Fixed(48.0))
+                        .height(Length::Fill)
+                        .style(panel_style)
+                        .into()
+                };
+
                 let content = widget::column![
-                    container(
+                    container(widget::column![
                         widget::row![
                             widget::column![
-                                widget::text("Ollama GUI")
-                                    .size(29)
-                                    .color(text_main()),
-                                Space::new().height(Length::Fixed(4.0)),
-                                widget::text("Local AI chat, model control, and prompt management.")
-                                    .size(14)
+                                widget::text("OLLAMA DESKTOP").size(11).color(accent_2()),
+                                widget::text("Local workspace").size(20).color(text_main()),
+                            ],
+                            Space::new().width(Length::Fill),
+                            container(widget::row![
+                                widget::text("●").size(13).color(status_color),
+                                Space::new().width(Length::Fixed(6.0)),
+                                widget::text(if online { "Online" } else { "Offline" })
+                                    .size(12)
                                     .color(text_muted()),
-                            ]
-                            .width(Length::Fill),
-
-                            container(
-                                widget::row![
-                                    widget::text("●")
-                                        .size(13)
-                                        .color(status_color),
-                                    Space::new().width(Length::Fixed(7.0)),
-                                    widget::text(format!("Ollama {}", local_ollamastate))
-                                        .size(13)
-                                        .color(text_main()),
-                                ]
-                            )
-                            .padding(10)
+                            ])
+                            .padding([8, 11])
                             .style(chip_style(status_color)),
-
                             Space::new().width(Length::Fixed(8.0)),
-                            secondary_button("Settings", Message::ToggleSettings),
-                            Space::new().width(Length::Fixed(8.0)),
-                            secondary_button("Help", Message::ToggleInfoPopup),
-                        ]
-                    )
-                    .padding(18)
+                            mini_button("Images", Message::ToggleImages),
+                            Space::new().width(Length::Fixed(6.0)),
+                            mini_button("Settings", Message::ToggleSettings),
+                        ],
+                        Space::new().height(Length::Fixed(14.0)),
+                        widget::row![
+                            widget::column![
+                                widget::text("MODEL").size(10).color(text_faint()),
+                                Space::new().height(Length::Fixed(5.0)),
+                                container(model_selector).width(Length::Fill),
+                            ]
+                            .width(Length::FillPortion(5)),
+                            Space::new().width(Length::Fixed(10.0)),
+                            widget::column![
+                                widget::text("SYSTEM PROMPT").size(10).color(text_faint()),
+                                Space::new().height(Length::Fixed(5.0)),
+                                widget::pick_list(
+                                    self.system_prompt
+                                        .system_prompts_as_vec
+                                        .lock()
+                                        .unwrap()
+                                        .clone(),
+                                    self.system_prompt.system_prompt.clone(),
+                                    Message::SystemPromptChange,
+                                )
+                                .placeholder("System prompt")
+                                .padding([12, 14])
+                                .text_size(14)
+                                .style(pick_list_style)
+                                .menu_style(pick_list_menu_style)
+                                .width(Length::Fill),
+                            ]
+                            .width(Length::FillPortion(3)),
+                            Space::new().width(Length::Fixed(10.0)),
+                            widget::column![
+                                widget::text("REASONING").size(10).color(text_faint()),
+                                Space::new().height(Length::Fixed(5.0)),
+                                thinking_selector,
+                            ]
+                            .width(Length::Fixed(150.0)),
+                        ],
+                    ])
+                    .padding(16)
                     .width(Length::Fill)
                     .style(panel_style),
-
-                    Space::new().height(Length::Fixed(14.0)),
-
+                    Space::new().height(Length::Fixed(10.0)),
                     container(
                         widget::scrollable(
                             widget::column![
@@ -966,93 +1173,202 @@ impl Program {
                         .height(Length::Fill)
                         .anchor_bottom()
                     )
-                    .padding(14)
+                    .padding(16)
                     .width(Length::Fill)
                     .height(Length::Fill)
                     .style(panel_style),
-
-                    Space::new().height(Length::Fixed(14.0)),
-
-                    container(
-                        widget::column![
-                            widget::row![
-                                widget::column![
-                                    widget::text("Model")
-                                        .size(12)
-                                        .color(text_faint()),
-                                    Space::new().height(Length::Fixed(5.0)),
-                                    model_selector,
-                                ],
-
-                                Space::new().width(Length::Fixed(12.0)),
-
-                                widget::column![
-                                    widget::text("System prompt")
-                                        .size(12)
-                                        .color(text_faint()),
-                                    Space::new().height(Length::Fixed(5.0)),
-                                    system_prompt_selector,
-                                ],
-
-                                Space::new().width(Length::Fixed(12.0)),
-
-                                container(
-                                    widget::row![
-                                        widget::text("Thinking")
-                                            .size(13)
-                                            .color(text_muted()),
-                                        Space::new().width(Length::Fixed(8.0)),
-                                        widget::checkbox(self.user_information.think)
-                                            .label("")
-                                            .on_toggle(|_| Message::ToggleThinking),
-                                    ]
-                                )
-                                .padding(10)
-                                .style(chip_style(if self.user_information.think {
-                                    accent_2()
-                                } else {
-                                    border_bright()
-                                })),
-
-                                Space::new().width(Length::Fill),
-
-                                secondary_button(
-                                    "Copy latest response",
-                                    Message::CopyPressed(latest_response_to_copy)
-                                ),
-                            ],
-
-                            Space::new().height(Length::Fixed(12.0)),
-
-                            container(
-                                widget::row![
-                                    prompt,
-                                    Space::new().width(Length::Fixed(10.0)),
-                                    primary_button(
-                                        "Send",
-                                        Message::Prompt(self.prompt.prompt.clone())
-                                    ),
-                                ]
-                            )
-                            .padding(8)
-                            .style(input_shell_style),
-
-                            Space::new().height(Length::Fixed(10.0)),
-                            offline_hint,
-                            missing_bots_hint,
-
-                            widget::row![
-                                widget::text(self.debug_message.clone().message)
-                                    .size(13)
-                                    .color(debug_color),
-                            ],
-                        ]
-                    )
-                    .padding(16)
+                    Space::new().height(Length::Fixed(10.0)),
+                    container(widget::column![
+                        if let Some(image) = self.pending_image.as_ref() {
+                            image_preview(image, true)
+                        } else {
+                            widget::column![].into()
+                        },
+                        container(widget::row![
+                            mini_button("＋ Image", Message::PickImage),
+                            Space::new().width(Length::Fixed(6.0)),
+                            prompt,
+                            Space::new().width(Length::Fixed(6.0)),
+                            if self.is_processing {
+                                primary_button("Stop", Message::StopResponse)
+                            } else {
+                                primary_button("Send", Message::Prompt(self.prompt.prompt.clone()))
+                            },
+                        ])
+                        .padding(6)
+                        .style(input_shell_style),
+                        widget::row![
+                            Space::new().width(Length::Fill),
+                            mini_button("Paste image", Message::PasteImage),
+                            Space::new().width(Length::Fixed(6.0)),
+                            mini_button(
+                                "Copy response",
+                                Message::CopyPressed(latest_response_to_copy)
+                            ),
+                        ],
+                        offline_hint,
+                        missing_bots_hint,
+                        widget::row![
+                            widget::text(self.debug_message.clone().message)
+                                .size(13)
+                                .color(debug_color),
+                        ],
+                    ])
+                    .padding(12)
                     .width(Length::Fill)
                     .style(panel_style),
                 ]
                 .spacing(iced::Pixels(0.0));
+
+                return container(widget::row![
+                    chat_sidebar,
+                    Space::new().width(Length::Fixed(8.0)),
+                    content
+                ])
+                .padding(8)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .style(app_background_style)
+                .into();
+            }
+
+            GUIState::Images => {
+                let bots_list = self.app_state.bots_list.lock().unwrap().clone();
+                let selected_model = self.user_information.model.clone();
+                let model_selector: Element<Message> =
+                    widget::pick_list(bots_list, selected_model, Message::ModelChange)
+                        .padding([12, 14])
+                        .text_size(14)
+                        .style(pick_list_style)
+                        .menu_style(pick_list_menu_style)
+                        .width(Length::Fill)
+                        .into();
+
+                let prompt = iced::widget::TextInput::<Message>::new(
+                    "Describe an image, or ask a question about the attached image…",
+                    &self.prompt.prompt,
+                )
+                .padding(14)
+                .size(16)
+                .width(Length::Fill)
+                .on_input(Message::UpdatePrompt)
+                .style(text_input_style);
+
+                let attachment: Element<Message> = if let Some(image) = self.pending_image.as_ref()
+                {
+                    image_preview(image, true)
+                } else {
+                    container(widget::column![
+                        widget::text("Add an image for vision")
+                            .size(17)
+                            .color(text_main()),
+                        Space::new().height(Length::Fixed(5.0)),
+                        widget::text("Paste from the clipboard or choose a local image.")
+                            .size(12)
+                            .color(text_muted()),
+                        Space::new().height(Length::Fixed(14.0)),
+                        widget::row![
+                            secondary_button("Choose image", Message::PickImage),
+                            Space::new().width(Length::Fixed(8.0)),
+                            secondary_button("Paste image", Message::PasteImage),
+                        ],
+                    ])
+                    .padding(22)
+                    .width(Length::Fill)
+                    .style(flat_card_style)
+                    .into()
+                };
+
+                let generated: Vec<Element<Message>> = self
+                    .generated_images
+                    .iter()
+                    .rev()
+                    .map(|path| {
+                        container(widget::column![
+                            widget::image(iced::widget::image::Handle::from_path(path))
+                                .height(Length::Fixed(280.0))
+                                .width(Length::Fill)
+                                .content_fit(iced::ContentFit::Contain),
+                            Space::new().height(Length::Fixed(8.0)),
+                            widget::row![
+                                widget::text(path.clone()).size(11).color(text_muted()),
+                                Space::new().width(Length::Fill),
+                                mini_button("Copy image", Message::CopyImage(path.clone())),
+                            ],
+                        ])
+                        .padding(12)
+                        .width(Length::Fill)
+                        .style(flat_card_style)
+                        .into()
+                    })
+                    .collect();
+
+                let response_text = self.response.response_as_string.lock().unwrap().clone();
+                let vision_response: Element<Message> =
+                    if self.is_processing || !response_text.trim().is_empty() {
+                        container(widget::column![
+                            widget::text(if self.is_processing {
+                                "Vision model is responding…"
+                            } else {
+                                "Vision response"
+                            })
+                            .size(12)
+                            .color(accent_2()),
+                            Space::new().height(Length::Fixed(8.0)),
+                            markdown_with_code_copy(
+                                &self.response.parsed_markdown,
+                                self.user_information.text_size,
+                                self.last_copied_text.as_ref(),
+                            ),
+                        ])
+                        .padding(14)
+                        .width(Length::Fill)
+                        .style(bot_bubble_style)
+                        .into()
+                    } else {
+                        widget::column![].into()
+                    };
+
+                let generate_label = if self.is_generating_image {
+                    "Generating…"
+                } else {
+                    "Generate image"
+                };
+                let content = widget::column![
+                    container(widget::row![
+                        section_title("Images", "Use vision models to inspect images or experimental image models to create them."),
+                        Space::new().width(Length::Fill),
+                        secondary_button("Back to chat", Message::ToggleImages),
+                    ]).padding(18).width(Length::Fill).style(panel_style),
+                    Space::new().height(Length::Fixed(14.0)),
+                    container(widget::column![
+                        widget::text("Model").size(12).color(text_faint()),
+                        Space::new().height(Length::Fixed(5.0)),
+                        model_selector,
+                        Space::new().height(Length::Fixed(14.0)),
+                        attachment,
+                        Space::new().height(Length::Fixed(12.0)),
+                        prompt,
+                        Space::new().height(Length::Fixed(10.0)),
+                        widget::row![
+                            primary_button("Ask about image", Message::Prompt(self.prompt.prompt.clone())),
+                            Space::new().width(Length::Fixed(10.0)),
+                            primary_button(generate_label, Message::GenerateImage),
+                            Space::new().width(Length::Fill),
+                            widget::text("Generation requires an Ollama image-generation model and supported runtime.")
+                                .size(11).color(text_faint()),
+                        ],
+                    ]).padding(18).width(Length::Fill).style(panel_style),
+                    Space::new().height(Length::Fixed(14.0)),
+                    vision_response,
+                    Space::new().height(Length::Fixed(14.0)),
+                    container(widget::scrollable(
+                        widget::Column::with_children(generated).spacing(iced::Pixels(12.0))
+                    ).height(Length::Fill)).padding(14).width(Length::Fill).height(Length::Fill).style(panel_style),
+                    widget::text(self.debug_message.message.clone())
+                        .size(13)
+                        .color(if self.debug_message.is_error { danger() } else { success() }),
+                ];
 
                 return container(content)
                     .padding(18)
@@ -1098,7 +1414,7 @@ impl Program {
                     container(
                         widget::column![
                             container(
-                                widget::row![
+                                widget::column![
                                     setting_label(
                                         "Model",
                                         "Choose the Ollama model used for new responses."
@@ -1108,7 +1424,11 @@ impl Program {
                                         self.user_information.model.clone(),
                                         Message::ModelChange,
                                     )
-                                    .width(Length::Fixed(280.0)),
+                                    .padding([12, 14])
+                                    .text_size(14)
+                                    .style(pick_list_style)
+                                    .menu_style(pick_list_menu_style)
+                                    .width(Length::Fill),
                                 ]
                             )
                             .padding(16)
@@ -1117,20 +1437,35 @@ impl Program {
 
                             Space::new().height(Length::Fixed(10.0)),
 
-                            container(
-                                widget::row![
+                            if self.user_information.thinking_supported == Some(true) {
+                                container(
+                                    widget::column![
+                                        setting_label(
+                                            "Thinking effort",
+                                            "Choose how much reasoning the model should use."
+                                        ),
+                                        Space::new().height(Length::Fixed(10.0)),
+                                        thinking_control(self.user_information.thinking_level),
+                                    ]
+                                )
+                                .padding(16)
+                                .width(Length::Fill)
+                                .style(flat_card_style)
+                            } else {
+                                container(
                                     setting_label(
-                                        "Thinking",
-                                        "Enable thinking mode for models that support it."
-                                    ),
-                                    widget::checkbox(self.user_information.think)
-                                        .label("Enabled")
-                                        .on_toggle(|_| Message::ToggleThinking),
-                                ]
-                            )
-                            .padding(16)
-                            .width(Length::Fill)
-                            .style(flat_card_style),
+                                        "Reasoning",
+                                        if self.user_information.thinking_supported == Some(false) {
+                                            "This model does not offer adjustable reasoning."
+                                        } else {
+                                            "Select a model and wait while reasoning support is checked."
+                                        }
+                                    )
+                                )
+                                .padding(16)
+                                .width(Length::Fill)
+                                .style(flat_card_style)
+                            },
 
                             Space::new().height(Length::Fixed(10.0)),
 
@@ -1168,7 +1503,7 @@ impl Program {
                             Space::new().height(Length::Fixed(10.0)),
 
                             container(
-                                widget::row![
+                                widget::column![
                                     setting_label(
                                         "System prompt",
                                         "Choose the personality or instruction profile."
@@ -1178,7 +1513,11 @@ impl Program {
                                         self.system_prompt.system_prompt.clone(),
                                         Message::SystemPromptChange,
                                     )
-                                    .width(Length::Fixed(280.0)),
+                                    .padding([12, 14])
+                                    .text_size(14)
+                                    .style(pick_list_style)
+                                    .menu_style(pick_list_menu_style)
+                                    .width(Length::Fill),
                                 ]
                             )
                             .padding(16)
@@ -1222,9 +1561,33 @@ impl Program {
 
                             container(
                                 widget::row![
+                                    widget::column![
+                                        setting_label(
+                                            "Chat storage",
+                                            "Saved chats use this folder. The full path is shown so you can always locate them."
+                                        ),
+                                        widget::text(self.chat_storage_dir.display().to_string())
+                                            .size(12)
+                                            .color(text_muted()),
+                                    ]
+                                    .width(Length::Fill),
+                                    secondary_button(
+                                        "Choose folder",
+                                        Message::ChooseChatFolder
+                                    ),
+                                ]
+                            )
+                            .padding(16)
+                            .width(Length::Fill)
+                            .style(flat_card_style),
+
+                            Space::new().height(Length::Fixed(10.0)),
+
+                            container(
+                                widget::row![
                                     setting_label(
-                                        "Chat history",
-                                        "Save the current chat history locally."
+                                        "Model conversation context",
+                                        "Include earlier messages from this chat in the next model request. Saved chats are managed in the left menu."
                                     ),
                                     widget::checkbox(
                                         user_information.current_chat_history_enabled
@@ -1253,7 +1616,7 @@ impl Program {
                                     .width(Length::Fill),
 
                                     danger_button(
-                                        "Wipe chat history",
+                                        "Clear current context",
                                         Message::WipeChatHistory
                                     ),
 
@@ -1281,7 +1644,7 @@ impl Program {
                     .style(panel_style),
                 ];
 
-                return container(content)
+                return container(widget::scrollable(content).height(Length::Fill))
                     .padding(18)
                     .width(Length::Fill)
                     .height(Length::Fill)
@@ -1306,158 +1669,143 @@ impl Program {
                 )
                 .padding(12)
                 .size(15)
-                .width(Length::Fixed(310.0))
+                .width(Length::Fill)
                 .on_submit(Message::InstallModel(self.installing_model.clone()))
                 .on_input(|input| Message::UpdateInstall(input))
                 .style(text_input_style);
 
-                let change_ip = iced::widget::TextInput::<Message>::new(
-                    ip.ip.as_str(),
-                    &ip.ip,
-                )
-                .padding(12)
-                .size(15)
-                .width(Length::Fixed(230.0))
-                .on_submit(Message::ChangeIp(ip.ip.clone()))
-                .on_input(|input| Message::ChangeIp(input))
-                .style(text_input_style);
+                let change_ip = iced::widget::TextInput::<Message>::new(ip.ip.as_str(), &ip.ip)
+                    .padding(12)
+                    .size(15)
+                    .width(Length::FillPortion(3))
+                    .on_submit(Message::ChangeIp(ip.ip.clone()))
+                    .on_input(|input| Message::ChangeIp(input))
+                    .style(text_input_style);
 
-                let change_port = iced::widget::TextInput::<Message>::new(
-                    ip.port.as_str(),
-                    &ip.port,
-                )
-                .padding(12)
-                .size(15)
-                .width(Length::Fixed(110.0))
-                .on_submit(Message::ChangePort(ip.port.clone()))
-                .on_input(|input| Message::ChangePort(input))
-                .style(text_input_style);
+                let change_port =
+                    iced::widget::TextInput::<Message>::new(ip.port.as_str(), &ip.port)
+                        .padding(12)
+                        .size(15)
+                        .width(Length::FillPortion(1))
+                        .on_submit(Message::ChangePort(ip.port.clone()))
+                        .on_input(|input| Message::ChangePort(input))
+                        .style(text_input_style);
 
                 let content = widget::column![
-                    container(
-                        widget::row![
-                            section_title(
-                                "Advanced settings",
-                                "Install models, change connection settings, and tune rendering."
-                            ),
-                            Space::new().width(Length::Fill),
-                            secondary_button("Back to settings", Message::ToggleAdvancedSettings),
-                        ]
-                    )
+                    container(widget::row![
+                        section_title(
+                            "Advanced settings",
+                            "Install models, change connection settings, and tune rendering."
+                        ),
+                        Space::new().width(Length::Fill),
+                        secondary_button("Back to settings", Message::ToggleAdvancedSettings),
+                    ])
                     .padding(18)
                     .width(Length::Fill)
                     .style(panel_style),
-
                     Space::new().height(Length::Fixed(14.0)),
-
-                    container(
-                        widget::column![
-                            container(
-                                widget::row![
-                                    setting_label(
-                                        "System prompt",
-                                        "Change the active prompt profile."
-                                    ),
-                                    widget::pick_list(
-                                        prompts_list,
-                                        self.system_prompt.system_prompt.clone(),
-                                        Message::SystemPromptChange,
-                                    )
-                                    .width(Length::Fixed(310.0)),
-                                ]
+                    container(widget::column![
+                        container(widget::column![
+                            setting_label("System prompt", "Change the active prompt profile."),
+                            widget::pick_list(
+                                prompts_list,
+                                self.system_prompt.system_prompt.clone(),
+                                Message::SystemPromptChange,
                             )
-                            .padding(16)
-                            .width(Length::Fill)
-                            .style(flat_card_style),
-
+                            .padding([12, 14])
+                            .text_size(14)
+                            .style(pick_list_style)
+                            .menu_style(pick_list_menu_style)
+                            .width(Length::Fill),
+                        ])
+                        .padding(16)
+                        .width(Length::Fill)
+                        .style(flat_card_style),
+                        Space::new().height(Length::Fixed(10.0)),
+                        container(widget::column![
+                            setting_label(
+                                "Install model",
+                                "Enter an Ollama model name and press Enter."
+                            ),
+                            model_install,
+                        ])
+                        .padding(16)
+                        .width(Length::Fill)
+                        .style(flat_card_style),
+                        Space::new().height(Length::Fixed(10.0)),
+                        container(widget::column![
+                            setting_label(
+                                "Batch tokens",
+                                "Tokens per visual update when fast streaming is off. Higher values reduce rendering work."
+                            ),
                             Space::new().height(Length::Fixed(10.0)),
-
-                            container(
-                                widget::row![
-                                    setting_label(
-                                        "Install model",
-                                        "Enter an Ollama model name and press Enter."
-                                    ),
-                                    model_install,
-                                ]
-                            )
-                            .padding(16)
-                            .width(Length::Fill)
-                            .style(flat_card_style),
-
-                            Space::new().height(Length::Fixed(10.0)),
-
-                            container(
-                                widget::column![
-                                    setting_label(
-                                        "Batch tokens",
-                                        "Number of tokens to process before rendering. Recommended: 3."
-                                    ),
-                                    Space::new().height(Length::Fixed(10.0)),
-                                    widget::row![
-                                        widget::slider(
-                                            1.0..=10.0,
-                                            self.batch_tokens as f32,
-                                            |value| Message::ChangeBatchTokens(value as i32),
-                                        ),
-                                        Space::new().width(Length::Fixed(12.0)),
-                                        container(
-                                            widget::text(format!("{}", self.batch_tokens))
-                                                .size(13)
-                                                .color(text_main())
-                                        )
-                                        .padding(8)
-                                        .style(chip_style(accent())),
-                                    ],
-                                ]
-                            )
-                            .padding(16)
-                            .width(Length::Fill)
-                            .style(flat_card_style),
-
-                            Space::new().height(Length::Fixed(10.0)),
-
-                            container(
-                                widget::column![
-                                    setting_label(
-                                        "Ollama address",
-                                        "Change the IP address and port used to connect to Ollama."
-                                    ),
-                                    Space::new().height(Length::Fixed(12.0)),
-                                    widget::row![
-                                        change_ip,
-                                        Space::new().width(Length::Fixed(8.0)),
-                                        widget::text(":")
-                                            .size(20)
-                                            .color(text_muted()),
-                                        Space::new().width(Length::Fixed(8.0)),
-                                        change_port,
-                                    ],
-                                    Space::new().height(Length::Fixed(12.0)),
-                                    container(
-                                        widget::text(format!(
-                                            "Current address: {}:{}",
-                                            user_information.ip_address.ip,
-                                            user_information.ip_address.port
-                                        ))
+                            widget::row![
+                                widget::slider(1.0..=10.0, self.batch_tokens as f32, |value| {
+                                    Message::ChangeBatchTokens(value as i32)
+                                },),
+                                Space::new().width(Length::Fixed(12.0)),
+                                container(
+                                    widget::text(format!("{}", self.batch_tokens))
                                         .size(13)
                                         .color(text_main())
-                                    )
-                                    .padding(10)
-                                    .style(chip_style(accent_2())),
-                                ]
+                                )
+                                .padding(8)
+                                .style(chip_style(accent())),
+                            ],
+                        ])
+                        .padding(16)
+                        .width(Length::Fill)
+                        .style(flat_card_style),
+                        Space::new().height(Length::Fixed(10.0)),
+                        container(widget::row![
+                            setting_label(
+                                "Fast streaming",
+                                "Render as soon as the API yields output. Turn off to use token batching."
+                            ),
+                            widget::checkbox(self.fast_streaming)
+                                .label("Enabled")
+                                .on_toggle(|_| Message::ToggleFastStreaming),
+                        ])
+                        .padding(16)
+                        .width(Length::Fill)
+                        .style(flat_card_style),
+                        Space::new().height(Length::Fixed(10.0)),
+                        container(widget::column![
+                            setting_label(
+                                "Ollama address",
+                                "Change the IP address and port used to connect to Ollama."
+                            ),
+                            Space::new().height(Length::Fixed(12.0)),
+                            widget::row![
+                                change_ip,
+                                Space::new().width(Length::Fixed(8.0)),
+                                widget::text(":").size(20).color(text_muted()),
+                                Space::new().width(Length::Fixed(8.0)),
+                                change_port,
+                            ],
+                            Space::new().height(Length::Fixed(12.0)),
+                            container(
+                                widget::text(format!(
+                                    "Current address: {}:{}",
+                                    user_information.ip_address.ip,
+                                    user_information.ip_address.port
+                                ))
+                                .size(13)
+                                .color(text_main())
                             )
-                            .padding(16)
-                            .width(Length::Fill)
-                            .style(flat_card_style),
-                        ]
-                    )
+                            .padding(10)
+                            .style(chip_style(accent_2())),
+                        ])
+                        .padding(16)
+                        .width(Length::Fill)
+                        .style(flat_card_style),
+                    ])
                     .padding(18)
                     .width(Length::Fill)
                     .style(panel_style),
                 ];
 
-                return container(content)
+                return container(widget::scrollable(content).height(Length::Fill))
                     .padding(18)
                     .width(Length::Fill)
                     .height(Length::Fill)
