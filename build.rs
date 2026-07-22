@@ -8,6 +8,24 @@ use {
     winresource::WindowsResource,
 };
 
+fn copy_dir(source: &Path, target: &Path) -> io::Result<()> {
+    fs::create_dir_all(target)?;
+
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let source_path = entry.path();
+        let target_path = target.join(entry.file_name());
+
+        if entry.file_type()?.is_dir() {
+            copy_dir(&source_path, &target_path)?;
+        } else {
+            fs::copy(source_path, target_path)?;
+        }
+    }
+
+    Ok(())
+}
+
 fn main() -> io::Result<()> {
     // Set Windows icon
     if env::var_os("CARGO_CFG_WINDOWS").is_some() {
@@ -42,12 +60,7 @@ fn main() -> io::Result<()> {
             if target.exists() {
                 fs::remove_dir_all(&target)?;
             }
-            fs::create_dir_all(&target)?;
-            for entry in fs::read_dir(dir.1.deref())? {
-                let entry = entry?;
-                let target_path = target.join(entry.file_name());
-                fs::copy(entry.path(), target_path)?;
-            }
+            copy_dir(dir.1.deref(), &target)?;
         }
     }
 
