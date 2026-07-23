@@ -7,7 +7,10 @@ use iced::{
 
 use iced_selection::markdown as selectable_markdown;
 use iced_widget::{container::Style, markdown};
-use std::fmt;
+use std::{
+    fmt,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use crate::{
     ChatImage, Correspondence, GUIState, Language, Message, Program, ThinkingLevel,
@@ -195,6 +198,10 @@ fn tr(language: Language, english: &'static str) -> &'static str {
         "Adjust chat and response readability." => {
             "Ajusta la legibilidad del chat y las respuestas."
         }
+        "Dark mode" => "Modo oscuro",
+        "Switch between the dark and light interface themes." => {
+            "Cambia entre los temas oscuro y claro de la interfaz."
+        }
         "Chat storage" => "Almacenamiento de chats",
         "Saved chats use this folder. The full path is shown so you can always locate them." => {
             "Los chats guardados usan esta carpeta. Se muestra la ruta completa para que puedas encontrarlos."
@@ -232,6 +239,10 @@ fn tr(language: Language, english: &'static str) -> &'static str {
         "Fast streaming" => "Transmisión rápida",
         "Render as soon as the API yields output. Turn off to use token batching." => {
             "Muestra la respuesta en cuanto la API produce contenido. Desactívalo para usar lotes de tokens."
+        }
+        "Content filtering" => "Filtro de contenido",
+        "Censor offensive, profane, sexual, and severely inappropriate words with # characters." => {
+            "Censura palabras ofensivas, malsonantes, sexuales y gravemente inapropiadas con caracteres #."
         }
         "Ollama address" => "Dirección de Ollama",
         "Change the IP address and port used to connect to Ollama." => {
@@ -283,40 +294,86 @@ fn rgb(r: u8, g: u8, b: u8) -> Color {
     Color::from_rgb(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0)
 }
 
+static DARK_MODE: AtomicBool = AtomicBool::new(true);
+
+pub(crate) fn set_dark_mode(enabled: bool) {
+    DARK_MODE.store(enabled, Ordering::Relaxed);
+}
+
+fn is_dark_mode() -> bool {
+    DARK_MODE.load(Ordering::Relaxed)
+}
+
 fn app_bg() -> Color {
-    rgb(9, 12, 18)
+    if is_dark_mode() {
+        rgb(9, 12, 18)
+    } else {
+        rgb(242, 245, 250)
+    }
 }
 
 fn panel() -> Color {
-    rgb(15, 19, 28)
+    if is_dark_mode() {
+        rgb(15, 19, 28)
+    } else {
+        rgb(255, 255, 255)
+    }
 }
 
 fn panel_soft() -> Color {
-    rgb(20, 25, 36)
+    if is_dark_mode() {
+        rgb(20, 25, 36)
+    } else {
+        rgb(247, 249, 252)
+    }
 }
 
 fn panel_lifted() -> Color {
-    rgb(24, 30, 43)
+    if is_dark_mode() {
+        rgb(24, 30, 43)
+    } else {
+        rgb(251, 252, 254)
+    }
 }
 
 fn border_soft() -> Color {
-    rgb(39, 48, 65)
+    if is_dark_mode() {
+        rgb(39, 48, 65)
+    } else {
+        rgb(207, 214, 225)
+    }
 }
 
 fn border_bright() -> Color {
-    rgb(83, 101, 135)
+    if is_dark_mode() {
+        rgb(83, 101, 135)
+    } else {
+        rgb(143, 155, 177)
+    }
 }
 
 fn text_main() -> Color {
-    rgb(238, 241, 246)
+    if is_dark_mode() {
+        rgb(238, 241, 246)
+    } else {
+        rgb(25, 31, 43)
+    }
 }
 
 fn text_muted() -> Color {
-    rgb(165, 177, 198)
+    if is_dark_mode() {
+        rgb(165, 177, 198)
+    } else {
+        rgb(82, 94, 114)
+    }
 }
 
 fn text_faint() -> Color {
-    rgb(128, 139, 154)
+    if is_dark_mode() {
+        rgb(128, 139, 154)
+    } else {
+        rgb(105, 116, 135)
+    }
 }
 
 fn accent() -> Color {
@@ -341,7 +398,7 @@ fn warning() -> Color {
 
 fn shadow_color() -> Color {
     Color {
-        a: 0.30,
+        a: if is_dark_mode() { 0.30 } else { 0.12 },
         ..rgb(0, 0, 0)
     }
 }
@@ -385,7 +442,11 @@ fn pick_list_style(_theme: &Theme, status: widget::pick_list::Status) -> widget:
         placeholder_color: text_faint(),
         handle_color: if active { accent() } else { text_muted() },
         background: Background::Color(if active {
-            rgb(29, 37, 57)
+            if is_dark_mode() {
+                rgb(29, 37, 57)
+            } else {
+                rgb(232, 237, 248)
+            }
         } else {
             panel_soft()
         }),
@@ -407,7 +468,11 @@ fn pick_list_menu_style(_theme: &Theme) -> widget::overlay::menu::Style {
         },
         text_color: text_main(),
         selected_text_color: Color::WHITE,
-        selected_background: Background::Color(rgb(49, 67, 122)),
+        selected_background: Background::Color(if is_dark_mode() {
+            rgb(49, 67, 122)
+        } else {
+            rgb(75, 99, 205)
+        }),
         shadow: Shadow {
             color: shadow_color(),
             offset: Vector::from([0.0, 8.0]),
@@ -435,7 +500,11 @@ fn chat_entry_style(active: bool) -> impl Fn(&Theme) -> Style {
         snap: true,
         text_color: Some(text_main()),
         background: Some(Background::Color(if active {
-            rgb(49, 67, 122)
+            if is_dark_mode() {
+                rgb(49, 67, 122)
+            } else {
+                rgb(224, 231, 250)
+            }
         } else {
             panel_lifted()
         })),
@@ -490,8 +559,16 @@ fn input_shell_style(_theme: &Theme) -> Style {
 fn user_bubble_style(_theme: &Theme) -> Style {
     Style {
         snap: true,
-        text_color: Some(Color::WHITE),
-        background: Some(Background::Color(rgb(40, 52, 99))),
+        text_color: Some(if is_dark_mode() {
+            Color::WHITE
+        } else {
+            text_main()
+        }),
+        background: Some(Background::Color(if is_dark_mode() {
+            rgb(40, 52, 99)
+        } else {
+            rgb(224, 231, 250)
+        })),
         border: Border {
             color: accent(),
             width: 1.0,
@@ -527,7 +604,11 @@ fn web_activity_style(_theme: &Theme) -> Style {
     Style {
         snap: true,
         text_color: Some(text_main()),
-        background: Some(Background::Color(rgb(17, 27, 39))),
+        background: Some(Background::Color(if is_dark_mode() {
+            rgb(17, 27, 39)
+        } else {
+            rgb(235, 248, 252)
+        })),
         border: Border {
             color: rgb(48, 112, 139),
             width: 1.0,
@@ -542,7 +623,11 @@ fn website_row_style(active: bool) -> impl Fn(&Theme) -> Style {
         snap: true,
         text_color: Some(text_main()),
         background: Some(Background::Color(if active {
-            rgb(27, 55, 68)
+            if is_dark_mode() {
+                rgb(27, 55, 68)
+            } else {
+                rgb(219, 242, 247)
+            }
         } else {
             panel_soft()
         })),
@@ -559,7 +644,7 @@ fn chip_style(color: Color) -> impl Fn(&Theme) -> Style {
     move |_theme: &Theme| Style {
         snap: true,
         text_color: Some(text_main()),
-        background: Some(Background::Color(rgb(20, 25, 38))),
+        background: Some(Background::Color(panel_soft())),
         border: Border {
             color,
             width: 1.0,
@@ -573,9 +658,17 @@ fn danger_zone_style(_theme: &Theme) -> Style {
     Style {
         snap: true,
         text_color: Some(text_main()),
-        background: Some(Background::Color(rgb(34, 22, 30))),
+        background: Some(Background::Color(if is_dark_mode() {
+            rgb(34, 22, 30)
+        } else {
+            rgb(255, 242, 245)
+        })),
         border: Border {
-            color: rgb(118, 56, 74),
+            color: if is_dark_mode() {
+                rgb(118, 56, 74)
+            } else {
+                rgb(220, 155, 170)
+            },
             width: 1.0,
             radius: Radius::from(18.0),
         },
@@ -756,7 +849,7 @@ fn copy_code_button<'a>(code: String, copied: bool, language: Language) -> Eleme
             if copied {
                 button_visual(rgb(31, 92, 63), rgb(93, 225, 144), Color::WHITE, status)
             } else {
-                button_visual(rgb(28, 35, 52), rgb(65, 78, 110), text_muted(), status)
+                button_visual(panel_soft(), border_soft(), text_muted(), status)
             }
         })
         .on_press(Message::CopyPressed(code))
@@ -998,7 +1091,14 @@ fn markdown_with_code_copy<'a>(
     copied_text: Option<&String>,
     language: Language,
 ) -> Element<'a, Message> {
-    let settings = iced::widget::markdown::Settings::with_text_size(text_size, Theme::Dark);
+    let settings = iced::widget::markdown::Settings::with_text_size(
+        text_size,
+        if is_dark_mode() {
+            Theme::Dark
+        } else {
+            Theme::Light
+        },
+    );
 
     let mut children: Vec<Element<'a, Message>> = Vec::new();
 
@@ -1040,7 +1140,11 @@ fn message_bubble<'a>(
             container(widget::column![
                 widget::text(tr(language, "You"))
                     .size(12)
-                    .color(rgb(205, 221, 255))
+                    .color(if is_dark_mode() {
+                        rgb(205, 221, 255)
+                    } else {
+                        rgb(55, 72, 150)
+                    })
                     .align_x(Horizontal::Right),
                 Space::new().height(Length::Fixed(6.0)),
                 if let Some(image) = image.as_ref() {
@@ -2392,6 +2496,23 @@ impl Program {
                             Space::new().height(Length::Fixed(10.0)),
 
                             container(
+                                widget::row![
+                                    setting_label(
+                                        tr(language, "Dark mode"),
+                                        tr(language, "Switch between the dark and light interface themes.")
+                                    ),
+                                    widget::checkbox(self.app_state.dark_mode)
+                                        .label(tr(language, "Enabled"))
+                                        .on_toggle(|_| Message::ToggleDarkMode),
+                                ]
+                            )
+                            .padding(16)
+                            .width(Length::Fill)
+                            .style(flat_card_style),
+
+                            Space::new().height(Length::Fixed(10.0)),
+
+                            container(
                                 widget::column![
                                     widget::row![
                                         setting_label(
@@ -2667,6 +2788,19 @@ impl Program {
                             widget::checkbox(self.fast_streaming)
                                 .label(tr(language, "Enabled"))
                                 .on_toggle(|_| Message::ToggleFastStreaming),
+                        ])
+                        .padding(16)
+                        .width(Length::Fill)
+                        .style(flat_card_style),
+                        Space::new().height(Length::Fixed(10.0)),
+                        container(widget::row![
+                            setting_label(
+                                tr(language, "Content filtering"),
+                                tr(language, "Censor offensive, profane, sexual, and severely inappropriate words with # characters.")
+                            ),
+                            widget::checkbox(self.app_state.filtering)
+                                .label(tr(language, "Enabled"))
+                                .on_toggle(|_| Message::ToggleFiltering),
                         ])
                         .padding(16)
                         .width(Length::Fill)

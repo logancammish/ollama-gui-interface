@@ -218,7 +218,7 @@ impl BraveSearchProvider {
         let client = Client::builder()
             .timeout(Duration::from_secs(settings.request_timeout_seconds))
             .redirect(reqwest::redirect::Policy::none())
-            .user_agent("ollama-gui/0.5.0")
+            .user_agent("ollama-gui/0.5.1")
             .build()
             .map_err(|error| WebSearchError::ProviderUnavailable(error.to_string()))?;
         let search_endpoint = Url::parse(endpoint).map_err(|_| WebSearchError::InvalidUrl)?;

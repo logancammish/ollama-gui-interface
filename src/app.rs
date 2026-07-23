@@ -290,6 +290,7 @@ impl CurrentChat {
 // AppState keeps information on certain important information
 pub struct AppState {
     pub filtering: bool,
+    pub dark_mode: bool,
     pub logs: History,
     pub logging: bool,
     pub ollama_state: Arc<Mutex<String>>,

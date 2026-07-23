@@ -16,7 +16,7 @@ use ollama_rs::Ollama;
 use ollama_rs::generation::completion::GenerationResponse;
 use ollama_rs::generation::completion::request::GenerationRequest;
 use ollama_rs::models::ModelOptions;
-use rustrict::Censor;
+use rustrict::{Censor, Type};
 mod app;
 mod gui;
 mod web_search;
@@ -44,7 +44,7 @@ const MAX_RESPONSE_TOKENS: u32 = 65_536;
 const MIN_CONTEXT_TOKENS: u32 = 4_096;
 const MAX_CONTEXT_TOKENS: u32 = 262_144;
 
-const APP_VERSION: &str = "0.5.0";
+const APP_VERSION: &str = "0.5.1";
 
 #[derive(PartialEq, Clone, Copy)]
 pub enum GUIState {
@@ -109,6 +109,8 @@ enum Message {
     LanguageChange(Language),
     ToggleInfoPopup,
     ToggleChatHistory,
+    ToggleFiltering,
+    ToggleDarkMode,
     WipeChatHistory,
     ToggleAdvancedSettings,
     ChangeIp(String),
@@ -330,6 +332,13 @@ fn load_settings_text() -> Option<String> {
     fs::read_to_string(user_settings_path())
         .ok()
         .or_else(|| fs::read_to_string(resource_path("config/settings.json")).ok())
+}
+
+fn censor_text(input: &str) -> String {
+    Censor::from_str(input)
+        .with_censor_replacement('#')
+        .with_censor_first_character_threshold(Type::INAPPROPRIATE)
+        .censor()
 }
 
 /// Separates model reasoning from the user-facing answer. Unclosed tags are
@@ -745,7 +754,7 @@ impl Program {
         self.response_cancel = None;
     }
 
-    fn prompt(&mut self, prompt: String) -> Task<Message> {
+    fn prompt(&mut self, mut prompt: String) -> Task<Message> {
         if self.user_information.model.is_none() {
             Channels::send_request_to_channel(Arc::clone(&self.channels.debounce_channel), false);
             Channels::send_request_to_channel(
@@ -757,6 +766,10 @@ impl Program {
             );
             println!("Model is None");
             return Task::none();
+        }
+
+        if self.app_state.filtering {
+            prompt = censor_text(&prompt);
         }
 
         self.active_response_model_name = self.user_information.model.clone();
@@ -950,7 +963,7 @@ impl Program {
                     match result {
                         Ok(result) => {
                             let answer = if filtering {
-                                Censor::from_str(&result.answer).censor()
+                                censor_text(&result.answer)
                             } else {
                                 result.answer
                             };
@@ -1153,7 +1166,9 @@ impl Program {
                                         },
                                     );
                                 }
-                                print!("{}", token.response);
+                                if !filtering {
+                                    print!("{}", token.response);
+                                }
 
                                 // Ollama may return reasoning in its dedicated `thinking`
                                 // field, while some models emit literal <think> tags.
@@ -1165,19 +1180,11 @@ impl Program {
                                         format!("<think>{thinking}</think>{}", token.response);
                                 }
 
-                                let filtered_token: GenerationResponse = if filtering {
-                                    GenerationResponse {
-                                        response: Censor::from_str(token.response.as_str())
-                                            .censor(),
-                                        ..token
-                                    }
-                                } else {
-                                    token
-                                };
+                                final_response.push(token.response.clone());
 
-                                final_response.push(filtered_token.clone().response);
-
-                                if tx.send(filtered_token).is_err() {
+                                // Filtering must see the complete response: Ollama can
+                                // split a profane word across arbitrary stream tokens.
+                                if !filtering && tx.send(token).is_err() {
                                     break;
                                 }
                             }
@@ -1226,16 +1233,10 @@ impl Program {
                                 token.response =
                                     format!("<think>{thinking}</think>{}", token.response);
                             }
-                            let token = if filtering {
-                                GenerationResponse {
-                                    response: Censor::from_str(&token.response).censor(),
-                                    ..token
-                                }
-                            } else {
-                                token
-                            };
                             final_response.push(token.response.clone());
-                            let _ = tx.send(token);
+                            if !filtering {
+                                let _ = tx.send(token);
+                            }
                         }
                         Err(error) => {
                             eprintln!("Error decoding final Ollama response: {error}");
@@ -1249,6 +1250,26 @@ impl Program {
                             );
                         }
                     }
+                }
+
+                if filtering && !final_response.is_empty() {
+                    let filtered = censor_text(&final_response.join(""));
+                    final_response = vec![filtered.clone()];
+                    let _ = tx.send(GenerationResponse {
+                        model: user_info.model.clone().unwrap_or_default(),
+                        created_at: Local::now().to_rfc3339(),
+                        response: filtered,
+                        done: true,
+                        context: None,
+                        total_duration: None,
+                        load_duration: None,
+                        prompt_eval_count: None,
+                        prompt_eval_duration: None,
+                        eval_count: None,
+                        eval_duration: None,
+                        thinking: None,
+                        logprobs: None,
+                    });
                 }
 
                 if logging && !was_cancelled {
@@ -1834,6 +1855,24 @@ impl Program {
             Message::ToggleChatHistory => {
                 self.user_information.current_chat_history_enabled =
                     !self.user_information.current_chat_history_enabled;
+                self.persist_boolean_setting(
+                    "current_chat_history_enabled",
+                    self.user_information.current_chat_history_enabled,
+                );
+                Task::none()
+            }
+
+            Message::ToggleFiltering => {
+                self.app_state.filtering = !self.app_state.filtering;
+                self.app_state.logs.filtering = self.app_state.filtering;
+                self.persist_boolean_setting("filtering", self.app_state.filtering);
+                Task::none()
+            }
+
+            Message::ToggleDarkMode => {
+                self.app_state.dark_mode = !self.app_state.dark_mode;
+                gui::set_dark_mode(self.app_state.dark_mode);
+                self.persist_boolean_setting("dark_mode", self.app_state.dark_mode);
                 Task::none()
             }
 
@@ -2257,9 +2296,11 @@ impl Default for Program {
                 .clamp(minimum, maximum)
         };
         let filtering = setting_bool("filtering", true);
+        let dark_mode = setting_bool("dark_mode", true);
         let logging = setting_bool("logging", false);
         let info_popup = setting_bool("info_popup", false);
         let fast_streaming = setting_bool("fast_streaming", true);
+        let current_chat_history_enabled = setting_bool("current_chat_history_enabled", true);
         let web_search_settings = settings_hmap
             .get("web_search")
             .cloned()
@@ -2311,6 +2352,23 @@ impl Default for Program {
                     .and_then(|data| serde_json::from_str(&data).ok())
             })
             .unwrap_or_default();
+        let restored_chat = saved_chats
+            .iter()
+            .max_by(|left, right| left.updated_at.cmp(&right.updated_at))
+            .cloned();
+        let current_chat_id = restored_chat
+            .as_ref()
+            .map(|chat| chat.id.clone())
+            .unwrap_or_else(Self::new_chat_id);
+        let current_chat =
+            restored_chat
+                .as_ref()
+                .map(SavedChat::to_current)
+                .unwrap_or(CurrentChat {
+                    chats: vec![],
+                    messages: vec![],
+                    bot_responding: false,
+                });
 
         let history: History = History {
             began_logging: Local::now().to_rfc3339(),
@@ -2339,6 +2397,7 @@ impl Default for Program {
         };
 
         let (web_search_state_sender, web_search_state_receiver) = crossbeam_channel::unbounded();
+        gui::set_dark_mode(dark_mode);
 
         Self {
             batch_tokens: 3,
@@ -2351,7 +2410,7 @@ impl Default for Program {
             web_search_state_sender,
             web_search_state_receiver,
             discard_cancelled_web_search_updates: false,
-            current_chat_id: Self::new_chat_id(),
+            current_chat_id,
             saved_chats,
             chat_storage_dir,
             is_processing: false,
@@ -2393,12 +2452,8 @@ impl Default for Program {
                 logging_channel: Arc::new(Mutex::new(std::sync::mpsc::channel::<Log>())),
             },
             user_information: UserInformation {
-                chat_history: Arc::new(Mutex::new(CurrentChat {
-                    chats: vec![],
-                    messages: vec![],
-                    bot_responding: false,
-                })),
-                current_chat_history_enabled: true,
+                chat_history: Arc::new(Mutex::new(current_chat)),
+                current_chat_history_enabled,
                 model: None,
                 thinking_level: ThinkingLevel::Off,
                 thinking_supported: None,
@@ -2424,6 +2479,7 @@ impl Default for Program {
             },
             app_state: AppState {
                 filtering,
+                dark_mode,
                 gui_state: if info_popup {
                     GUIState::InfoPopup
                 } else {
@@ -2469,13 +2525,15 @@ pub fn main() -> iced::Result {
         ..iced::window::Settings::default()
     };
 
-    // The widget palette is intentionally dark; matching Iced's built-in theme
-    // keeps markdown, menus, and overlays consistent with the custom surfaces.
-    let mode = Theme::Dark;
-
     iced::application(Program::boot, Program::update, Program::view)
         .subscription(Program::subscription)
-        .theme(mode)
+        .theme(|program: &Program| {
+            if program.app_state.dark_mode {
+                Theme::Dark
+            } else {
+                Theme::Light
+            }
+        })
         .window_size(Size::new(700.0, 785.0))
         .window(window_settings)
         .run()
@@ -2484,8 +2542,14 @@ pub fn main() -> iced::Result {
 #[cfg(test)]
 mod tests {
     use super::{
-        decode_generation_line, disabled_web_tool_message, model_capabilities, split_thinking_text,
+        censor_text, decode_generation_line, disabled_web_tool_message, model_capabilities,
+        split_thinking_text,
     };
+
+    #[test]
+    fn content_filter_replaces_entire_inappropriate_words_with_hashes() {
+        assert_eq!(censor_text("hello crap"), "hello ####");
+    }
 
     #[test]
     fn separates_thinking_from_answer() {

@@ -1,6 +1,6 @@
 [Setup]
 AppName=ollama-gui
-AppVersion=0.5.0
+AppVersion=0.5.1
 ; Install per-user so setup and the application never require elevation.
 DefaultDirName={localappdata}\Programs\ollama-gui
 DefaultGroupName=ollama-gui
