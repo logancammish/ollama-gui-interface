@@ -1,0 +1,16 @@
+{
+    "filtering": false,
+    "logging": false,
+    "dark_mode": true,
+    "info_popup": true,
+    "fast_streaming": true,
+    "max_response_tokens": 10240,
+    "context_tokens": 20480,
+    "language": "english",
+    "web_search": {
+        "enabled": false,
+        "provider": "brave",
+        "result_limit": 5,
+        "request_timeout_seconds": 15
+    }
+}

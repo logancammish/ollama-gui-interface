@@ -31,10 +31,14 @@ However, as far as Ollama `1.17.7`:
 |---|---|
 | Model control | Use local Ollama models or connect to an external Ollama server |
 | Thinking toggle | Enable or disable thinking where supported |
+| Generation limits | Adjust maximum response and context-window token limits |
+| Images | Analyze images with vision models and use supported experimental image generators |
 | System prompts | Choose and customize system prompts |
 | Saved chats | View, reopen, and delete conversations from the chat sidebar |
 | Chat storage | Choose where saved chats are stored and see the full folder path in Settings |
 | Temporary chats | Start conversations that are not written to saved-chat storage |
+| Optional web search | Let tool-capable models search and fetch public webpages through Brave Search |
+| Languages | English and experimental machine-generated Spanish |
 | Logs | Easily access and toggle logs |
 | Filtering | Optional text filtering support |
 | Settings | Customizable interface and behavior |
@@ -55,7 +59,8 @@ The easiest way to use the app is to download the executable from the latest rel
    Go to the Releases page:  
    https://github.com/logancammish/ollama-gui-interface/releases
 
-   On Windows, download `ollama-gui-win64-installer.exe` if you want the standard installer.
+   On Windows, download `ollama-gui-win64-installer.exe` if you want the standard
+   per-user installer. It does not require administrator privileges.
 
 3. Run the executable  
    The application should start normally.
@@ -123,6 +128,12 @@ target/release
 
 Conversations are saved locally as `chats.json`. The current folder is shown under **Settings → Chat storage**, where you can choose a different folder at any time.
 
+On Windows, the default folder is:
+
+```text
+%LOCALAPPDATA%\Ollama GUI\chats
+```
+
 On Linux, the default folder is:
 
 ```text
@@ -130,6 +141,69 @@ On Linux, the default folder is:
 ```
 
 If `XDG_DATA_HOME` is set, the app uses `$XDG_DATA_HOME/ollama-gui/chats` instead. Existing conversations from the older `output/chats.json` location are detected automatically. Temporary chats are not saved.
+
+Settings, logs, and generated images also use the operating system's per-user
+application-data folder. The installed application directory is treated as
+read-only.
+
+## Languages
+
+Choose the interface language under **Settings → Interface language**. Spanish
+translations are currently experimental and machine-generated. They will be
+updated to human-made translations in a future release.
+
+## Generation limits
+
+The app defaults to a 10,240-token maximum response and a 20,480-token
+context window. Both can be adjusted in Settings. Reasoning tokens count toward
+the response limit, while the context window also includes conversation input.
+Larger context windows require substantially more memory.
+
+## Optional web search
+
+Web search is disabled by default. To enable it:
+
+1. Open **Settings**.
+2. Turn on **Enable Web Search**.
+3. Select **Brave Search** and provide a Brave Search API key.
+4. Optionally adjust the search-result limit.
+
+For better secret handling, set the `BRAVE_SEARCH_API_KEY` environment variable
+before starting the application instead of entering the key in the interface.
+A key entered in Settings is stored in the per-user settings JSON file. API keys
+are redacted from diagnostics and are never printed to logs.
+
+The Web button beside the chat input can override the default for the current
+conversation. When enabled, queries and requested webpage URLs are sent to the
+external provider. Only successful search/fetch URLs are shown as sources.
+Webpage text is treated as untrusted content, and local/private network targets,
+unsafe schemes, excessive redirects, binary responses, and oversized pages are
+blocked.
+
+## Image support
+
+The Images page checks the selected model's capabilities through Ollama.
+Models with the `vision` capability can inspect attached images. Experimental
+image generation is shown only for models with the `image` capability and uses
+Ollama's `/api/generate` endpoint. Generated images are saved in the per-user
+application-data folder.
+
+## Development checks
+
+Run the application with:
+
+```bash
+cargo run
+```
+
+Before submitting changes, run:
+
+```bash
+cargo fmt --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test
+cargo build
+```
 
 ---
 

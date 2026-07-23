@@ -4,14 +4,20 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use crate::{GUIState, Program};
+use crate::{GUIState, Program, web_search::WebSource};
 use chrono::Local;
 use iced_widget::markdown;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug)]
 pub enum Correspondence {
-    Bot(String),
+    Bot {
+        text: String,
+        model: Option<String>,
+        thinking_seconds: Option<u64>,
+        sources: Vec<WebSource>,
+        web_search_used: bool,
+    },
     User {
         text: String,
         image: Option<ChatImage>,
@@ -34,6 +40,15 @@ pub struct SavedChat {
     pub pinned: bool,
     pub context: Vec<String>,
     pub messages: Vec<StoredMessage>,
+    /// Metadata is kept separately so older `role`/`text` chat files remain readable.
+    #[serde(default)]
+    pub models: Vec<Option<String>>,
+    #[serde(default)]
+    pub thinking_seconds: Vec<Option<u64>>,
+    #[serde(default)]
+    pub sources: Vec<Vec<WebSource>>,
+    #[serde(default)]
+    pub web_search_used: Vec<bool>,
 }
 
 impl SavedChat {
@@ -49,7 +64,46 @@ impl SavedChat {
                 .iter()
                 .map(|message| match message {
                     Correspondence::User { text, .. } => StoredMessage::User(text.clone()),
-                    Correspondence::Bot(text) => StoredMessage::Bot(text.clone()),
+                    Correspondence::Bot { text, .. } => StoredMessage::Bot(text.clone()),
+                })
+                .collect(),
+            models: chat
+                .messages
+                .iter()
+                .map(|message| match message {
+                    Correspondence::Bot { model, .. } => model.clone(),
+                    Correspondence::User { .. } => None,
+                })
+                .collect(),
+            thinking_seconds: chat
+                .messages
+                .iter()
+                .map(|message| match message {
+                    Correspondence::Bot {
+                        thinking_seconds, ..
+                    } => *thinking_seconds,
+                    Correspondence::User { .. } => None,
+                })
+                .collect(),
+            sources: chat
+                .messages
+                .iter()
+                .map(|message| match message {
+                    Correspondence::Bot { sources, .. } => sources.clone(),
+                    Correspondence::User { .. } => Vec::new(),
+                })
+                .collect(),
+            web_search_used: chat
+                .messages
+                .iter()
+                .map(|message| {
+                    matches!(
+                        message,
+                        Correspondence::Bot {
+                            web_search_used: true,
+                            ..
+                        }
+                    )
                 })
                 .collect(),
         }
@@ -61,12 +115,19 @@ impl SavedChat {
             messages: self
                 .messages
                 .iter()
-                .map(|message| match message {
+                .enumerate()
+                .map(|(index, message)| match message {
                     StoredMessage::User(text) => Correspondence::User {
                         text: text.clone(),
                         image: None,
                     },
-                    StoredMessage::Bot(text) => Correspondence::Bot(text.clone()),
+                    StoredMessage::Bot(text) => Correspondence::Bot {
+                        text: text.clone(),
+                        model: self.models.get(index).cloned().flatten(),
+                        thinking_seconds: self.thinking_seconds.get(index).copied().flatten(),
+                        sources: self.sources.get(index).cloned().unwrap_or_default(),
+                        web_search_used: self.web_search_used.get(index).copied().unwrap_or(false),
+                    },
                 })
                 .collect(),
             bot_responding: false,
@@ -76,7 +137,7 @@ impl SavedChat {
 
 #[cfg(test)]
 mod saved_chat_tests {
-    use super::SavedChat;
+    use super::{Correspondence, CurrentChat, SavedChat};
 
     #[test]
     fn old_saved_chats_default_to_unpinned() {
@@ -90,6 +151,47 @@ mod saved_chat_tests {
 
         let chat: SavedChat = serde_json::from_str(json).unwrap();
         assert!(!chat.pinned);
+        assert!(chat.models.is_empty());
+        assert!(chat.thinking_seconds.is_empty());
+        assert!(chat.sources.is_empty());
+        assert!(chat.web_search_used.is_empty());
+    }
+
+    #[test]
+    fn response_metadata_survives_saved_chat_round_trip() {
+        let current = CurrentChat {
+            chats: vec![],
+            messages: vec![
+                Correspondence::User {
+                    text: "Question".into(),
+                    image: None,
+                },
+                Correspondence::Bot {
+                    text: "<think>Work</think>Answer".into(),
+                    model: Some("model-a".into()),
+                    thinking_seconds: Some(30),
+                    sources: vec![crate::web_search::WebSource {
+                        title: "Example".into(),
+                        url: "https://example.com".into(),
+                    }],
+                    web_search_used: true,
+                },
+            ],
+            bot_responding: false,
+        };
+
+        let reopened =
+            SavedChat::from_current("chat-1".into(), "Question".into(), &current).to_current();
+        assert!(matches!(
+            &reopened.messages[1],
+            Correspondence::Bot {
+                model: Some(model),
+                thinking_seconds: Some(30),
+                sources,
+                web_search_used: true,
+                ..
+            } if model == "model-a" && sources.len() == 1
+        ));
     }
 }
 
@@ -130,14 +232,14 @@ impl Log {
         systemprompt: Option<String>,
         prompt: String,
     ) -> Self {
-        return Log {
-            filtering: filtering,
-            time: String::from(Local::now().to_rfc3339()),
-            prompt: prompt,
-            response: response,
-            model: model,
-            systemprompt: systemprompt,
-        };
+        Log {
+            filtering,
+            time: Local::now().to_rfc3339(),
+            prompt,
+            response,
+            model,
+            systemprompt,
+        }
     }
 }
 
@@ -167,10 +269,10 @@ impl CurrentChat {
         self.chats.push(chat);
     }
     fn generate_new_message(user_message: String, bot_response: String) -> String {
-        return format!(
+        format!(
             "User: {}\nAI Language Model: {}",
             user_message, bot_response
-        );
+        )
     }
     pub fn generate_and_push(&mut self, user_message: String, bot_response: String) {
         let new_message = Self::generate_new_message(user_message, bot_response);
@@ -193,7 +295,6 @@ pub struct AppState {
     pub ollama_state: Arc<Mutex<String>>,
     pub bots_list: Arc<Mutex<Vec<String>>>,
     pub gui_state: GUIState,
-    pub dark_mode: bool,
 }
 
 // SystemPrompt saves the current system prompts and the currently selected system prompt
@@ -229,13 +330,12 @@ impl SystemPrompt {
 
         if system_prompt
             .system_prompts_as_hashmap
-            .get(&system_prompt_as_string)
-            .is_some()
+            .contains_key(&system_prompt_as_string)
         {
-            return system_prompt
+            system_prompt
                 .system_prompts_as_hashmap
                 .get(&system_prompt_as_string)
-                .cloned();
+                .cloned()
         } else {
             println!("system prompt is None");
             Channels::send_request_to_channel(
@@ -249,7 +349,7 @@ impl SystemPrompt {
                 Arc::clone(&program.channels.debounce_channel),
                 false,
             );
-            return None;
+            None
         }
     }
 }
@@ -267,11 +367,33 @@ pub struct UserInformation {
     pub thinking_level: ThinkingLevel,
     /// `None` means Ollama did not provide capability metadata, so we assume support.
     pub thinking_supported: Option<bool>,
+    pub vision_supported: Option<bool>,
+    pub image_generation_supported: Option<bool>,
+    pub max_response_tokens: u32,
+    pub context_tokens: u32,
     pub temperature: f32,
     pub text_size: f32,
     pub chat_history: Arc<Mutex<CurrentChat>>,
     pub current_chat_history_enabled: bool,
     pub ip_address: HostLocation,
+    pub language: Language,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Language {
+    #[default]
+    English,
+    Spanish,
+}
+
+impl fmt::Display for Language {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::English => "English",
+            Self::Spanish => "Español (experimental)",
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
