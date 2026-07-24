@@ -1,0 +1,36 @@
+name: macOS ARM64 build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Apple Silicon binary
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Build release binary
+        run: cargo build --locked --release --target aarch64-apple-darwin
+
+      - name: Upload macOS ARM64 binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: ollama-gui-macos-arm64
+          path: |
+            target/aarch64-apple-darwin/release/ollama-gui
+            target/aarch64-apple-darwin/release/config
+            target/aarch64-apple-darwin/release/output
+            target/aarch64-apple-darwin/release/assets
+          if-no-files-found: error

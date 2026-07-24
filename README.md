@@ -243,7 +243,7 @@ use `settings.json` and `history.json` in the application-data folder.
 |---|---|
 | Windows x64 | Officially supported; per-user installer available |
 | Linux x64 | Officially supported on Wayland |
-| macOS | Not officially supported or tested |
+| macOS Apple Silicon (ARM64) | Build supported; automated native build available |
 
 Ollama itself must be installed and running locally or reachable at the custom
 address you configure. Rust and Cargo are required only when building from
@@ -259,8 +259,16 @@ cd ollama-gui-interface
 cargo build --release
 ```
 
-The finished binary is `target/release/ollama-gui` on Linux and
-`target\release\ollama-gui.exe` on Windows.
+The finished binary is `target/release/ollama-gui` on Linux and macOS, and
+`target\release\ollama-gui.exe` on Windows. On an Apple Silicon Mac, build it
+natively with:
+
+```bash
+cargo build --release --target aarch64-apple-darwin
+```
+
+The macOS ARM64 binary is then
+`target/aarch64-apple-darwin/release/ollama-gui`.
 
 Run a development build with:
 
