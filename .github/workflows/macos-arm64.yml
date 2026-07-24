@@ -3,9 +3,11 @@ name: macOS ARM64 build
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches:
+      - main
   pull_request:
-    branches: [main]
+    branches:
+      - main
 
 permissions:
   contents: read
@@ -14,23 +16,50 @@ jobs:
   build:
     name: Build Apple Silicon binary
     runs-on: macos-14
-    steps:
-      - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin
 
       - name: Build release binary
-        run: cargo build --locked --release --target aarch64-apple-darwin
+        run: |
+          cargo build \
+            --locked \
+            --release \
+            --target aarch64-apple-darwin
 
-      - name: Upload macOS ARM64 binary
+      - name: Prepare downloadable files
+        shell: bash
+        run: |
+          RELEASE_DIR="target/aarch64-apple-darwin/release"
+          DIST_DIR="dist/ollama-gui-macos-arm64"
+
+          mkdir -p "$DIST_DIR"
+
+          cp "$RELEASE_DIR/ollama-gui" "$DIST_DIR/ollama-gui"
+          chmod +x "$DIST_DIR/ollama-gui"
+
+          # Copy these folders from the release directory if they exist.
+          for folder in config output assets; do
+            if [ -d "$RELEASE_DIR/$folder" ]; then
+              cp -R "$RELEASE_DIR/$folder" "$DIST_DIR/"
+            elif [ -d "$folder" ]; then
+              cp -R "$folder" "$DIST_DIR/"
+            fi
+          done
+
+          echo "Files being uploaded:"
+          find "$DIST_DIR" -maxdepth 3 -print
+
+      - name: Upload downloadable macOS ARM64 build
         uses: actions/upload-artifact@v4
         with:
           name: ollama-gui-macos-arm64
-          path: |
-            target/aarch64-apple-darwin/release/ollama-gui
-            target/aarch64-apple-darwin/release/config
-            target/aarch64-apple-darwin/release/output
-            target/aarch64-apple-darwin/release/assets
+          path: dist/ollama-gui-macos-arm64/
           if-no-files-found: error
+          retention-days: 90
