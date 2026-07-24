@@ -22,7 +22,7 @@ native Rust application.
 </div>
 
 > [!NOTE]
-> This README describes the current `main` branch (`0.5.1`). Packaged releases
+> This README describes the current `main` branch (`0.5.2`). Packaged releases
 > may trail the source branch; check the release notes for the exact feature set
 > in a download.
 
@@ -51,7 +51,8 @@ It is a particularly good fit if you want to:
   and High thinking levels. Reasoning is kept in a collapsible section so the
   final answer stays readable.
 - **Polished streaming output** — responses render as Markdown, code blocks have
-  one-click copy controls, and an in-progress answer can be stopped at any time.
+  one-click copy controls and syntax highlighting for Rust, Lua, C, C++, Python,
+  C#, and many other common languages.
 - **Precise generation controls** — tune temperature, maximum response length
   from 512 to 65,536 tokens, and context windows from 4,096 to 262,144 tokens.
 - **A theme that fits your desk** — switch between the redesigned dark and light
@@ -61,6 +62,8 @@ It is a particularly good fit if you want to:
 
 - **Saved chat sidebar** — reopen, pin, unpin, and delete conversations without
   digging through files.
+- **Background responses** — switch conversations while prompts keep running;
+  progress remains visible beside each working chat.
 - **Temporary chats** — explore an idea without writing the conversation to
   saved-chat storage.
 - **Flexible local storage** — see the exact chat folder and move saved chats to
@@ -70,7 +73,8 @@ It is a particularly good fit if you want to:
 
 ### Vision and image generation
 
-- Attach an image with the file picker, drag and drop, or your clipboard.
+- Attach one or more images with the multi-select file picker, drag and drop, or
+  your clipboard.
 - Ask a vision-capable model to describe, classify, read, or reason about it.
 - Use the dedicated Images workspace with models that report Ollama's
   experimental `image` capability.
@@ -89,9 +93,10 @@ Brave Search. The model can search, fetch relevant pages, and return clickable
 sources with its answer. Live status shows what it is searching and reading.
 
 Web access is off by default and can be set globally or toggled for the current
-chat. Requests are guarded with limits on searches, pages, redirects, response
-size, and tool iterations. Private/local network targets and unsupported content
-types are blocked.
+chat. An opt-in setting lets the model make one distinct follow-up search when
+the first results are insufficient. Requests are guarded with limits on searches,
+pages, redirects, response size, and tool iterations. Private/local network
+targets and unsupported content types are blocked.
 
 ### More control, without more friction
 
@@ -154,7 +159,7 @@ Most controls live in **Settings**:
 | Response and context limits | Output cap and how much conversation the model can hold |
 | Temperature | Predictability versus variety |
 | System prompt | Active instruction/personality profile |
-| Web search | Provider, API key, and results per search |
+| Web search | Provider, API key, results per search, and optional follow-up search |
 | Chat storage | The folder containing saved conversations |
 | Model conversation context | Whether earlier messages are included in the next request |
 | Interface | Language, theme, and text size |
@@ -193,8 +198,9 @@ a model that supports Ollama tool calling.
 
 1. Open **Settings** and enable **Web Search**.
 2. Leave **Brave Search** selected and choose the result limit.
-3. Provide the API key using one of the methods below.
-4. Use the **Web** button beside the chat input whenever you want web tools
+3. Optionally enable **Allow a follow-up search**.
+4. Provide the API key using one of the methods below.
+5. Use the **Web** button beside the chat input whenever you want web tools
    enabled for that conversation.
 
 The preferred approach is to set the key before launching the app:

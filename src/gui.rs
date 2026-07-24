@@ -6,7 +6,7 @@ use iced::{
 };
 
 use iced_selection::markdown as selectable_markdown;
-use iced_widget::{container::Style, markdown};
+use iced_widget::{container::Style, core::text::Wrapping, markdown};
 use std::{
     fmt,
     sync::atomic::{AtomicBool, Ordering},
@@ -69,6 +69,7 @@ fn tr(language: Language, english: &'static str) -> &'static str {
         "＋ New chat" => "＋ Nuevo chat",
         "Leave temporary chat" => "Salir del chat temporal",
         "Temporary chat" => "Chat temporal",
+        "Temporary chats" => "Chats temporales",
         "Temporary · not saved" => "Temporal · no guardado",
         "Saved chats" => "Chats guardados",
         "Unpin" => "Desfijar",
@@ -90,6 +91,10 @@ fn tr(language: Language, english: &'static str) -> &'static str {
             "Es preferible usar BRAVE_SEARCH_API_KEY. Las claves introducidas aquí se guardan en el archivo local de configuración y nunca se muestran en los registros."
         }
         "Search result limit" => "Límite de resultados",
+        "Allow a follow-up search" => "Permitir una búsqueda adicional",
+        "Lets the model run one additional, distinct search when the first results are insufficient." => {
+            "Permite que el modelo haga otra búsqueda distinta cuando los primeros resultados no sean suficientes."
+        }
         "Web search" => "Búsqueda web",
         "Web on" => "Web activada",
         "Web off" => "Web desactivada",
@@ -99,6 +104,7 @@ fn tr(language: Language, english: &'static str) -> &'static str {
         "Searching" => "Buscando",
         "Reviewing results" => "Revisando resultados",
         "Reading website" => "Leyendo sitio web",
+        "found" => "encontrados",
         "Websites found" => "Sitios encontrados",
         "The model is choosing which result to read." => {
             "El modelo está eligiendo qué resultado leer."
@@ -808,27 +814,32 @@ fn thinking_control<'a>(selected: ThinkingLevel, language: Language) -> Element<
 
 fn image_preview<'a>(
     image: &ChatImage,
-    removable: bool,
+    remove_index: Option<usize>,
     language: Language,
 ) -> Element<'a, Message> {
     let preview = widget::image(image.preview_handle.clone())
         .width(Length::Fixed(160.0))
         .height(Length::Fixed(110.0))
         .content_fit(iced::ContentFit::Contain);
-    let footer: Element<Message> = if removable {
+    let footer: Element<Message> = if let Some(index) = remove_index {
         widget::row![
-            widget::text(image.name.clone())
+            widget::text(ellipsize_chat_title(&image.name, 16))
                 .size(11)
-                .color(text_muted()),
+                .color(text_muted())
+                .wrapping(Wrapping::None),
             Space::new().width(Length::Fill),
-            mini_button(tr(language, "Remove"), Message::RemoveImage),
+            mini_button(tr(language, "Remove"), Message::RemoveImage(index)),
         ]
         .into()
     } else {
-        widget::text(format!("{} · {}", image.name, image.mime_type))
-            .size(11)
-            .color(text_muted())
-            .into()
+        widget::text(ellipsize_chat_title(
+            &format!("{} · {}", image.name, image.mime_type),
+            22,
+        ))
+        .size(11)
+        .color(text_muted())
+        .wrapping(Wrapping::None)
+        .into()
     };
     container(widget::column![
         preview,
@@ -836,8 +847,33 @@ fn image_preview<'a>(
         footer
     ])
     .padding(8)
+    .width(Length::Fixed(176.0))
+    .clip(true)
     .style(flat_card_style)
     .into()
+}
+
+fn image_previews<'a>(
+    images: &[ChatImage],
+    removable: bool,
+    language: Language,
+) -> Element<'a, Message> {
+    if images.is_empty() {
+        return widget::column![].into();
+    }
+
+    let previews = widget::Column::with_children(
+        images
+            .iter()
+            .enumerate()
+            .map(|(index, image)| image_preview(image, removable.then_some(index), language))
+            .collect::<Vec<_>>(),
+    )
+    .spacing(iced::Pixels(6.0));
+
+    widget::scrollable(previews)
+        .height(Length::Fixed(150.0))
+        .into()
 }
 
 fn copy_code_button<'a>(code: String, copied: bool, language: Language) -> Element<'a, Message> {
@@ -915,6 +951,23 @@ fn website_host(url: &str) -> String {
         .unwrap_or_else(|| url.to_string())
 }
 
+fn ellipsize_chat_title(title: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+
+    let single_line = title.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut chars = single_line.chars();
+    let mut shortened = chars.by_ref().take(max_chars).collect::<String>();
+
+    if chars.next().is_some() {
+        shortened.pop();
+        shortened.push('…');
+    }
+
+    shortened
+}
+
 fn website_result_row<'a>(
     index: usize,
     source: WebSource,
@@ -922,6 +975,8 @@ fn website_result_row<'a>(
     language: Language,
 ) -> Element<'a, Message> {
     let host = website_host(&source.url);
+    let title = ellipsize_chat_title(&source.title, 64);
+    let host = ellipsize_chat_title(&host, 64);
     let trailing = if active {
         tr(language, "READING").to_string()
     } else {
@@ -945,9 +1000,15 @@ fn website_result_row<'a>(
             })),
             Space::new().width(Length::Fixed(9.0)),
             widget::column![
-                widget::text(source.title).size(12).color(text_main()),
+                widget::text(title)
+                    .size(12)
+                    .color(text_main())
+                    .wrapping(Wrapping::None),
                 Space::new().height(Length::Fixed(2.0)),
-                widget::text(host).size(11).color(text_muted()),
+                widget::text(host)
+                    .size(11)
+                    .color(text_muted())
+                    .wrapping(Wrapping::None),
             ]
             .width(Length::Fill),
             widget::text(trailing).size(10).color(trailing_color),
@@ -955,6 +1016,7 @@ fn website_result_row<'a>(
         .on_press(Message::OpenSource(source.url))
         .padding(0)
         .style(chat_title_button_style)
+        .clip(true)
         .width(Length::Fill),
     )
     .padding(9)
@@ -964,123 +1026,66 @@ fn website_result_row<'a>(
 }
 
 fn web_search_activity<'a>(state: WebSearchState, language: Language) -> Element<'a, Message> {
-    let (status, detail, query, websites, active_url, status_color, badge, field_label) =
-        match state {
-            WebSearchState::Searching { query } => (
-                tr(language, "Searching"),
-                tr(language, "Searching the web…"),
-                query,
-                Vec::new(),
-                None,
-                accent_2(),
-                "LIVE",
-                tr(language, "Search query"),
-            ),
-            WebSearchState::Results { query, websites } => (
-                tr(language, "Reviewing results"),
-                tr(language, "The model is choosing which result to read."),
-                query,
-                websites,
-                None,
-                warning(),
-                "LIVE",
-                tr(language, "Search query"),
-            ),
-            WebSearchState::Fetching {
-                url,
-                query,
-                websites,
-            } => {
-                let query = if query.trim().is_empty() {
-                    website_host(&url)
-                } else {
-                    query
-                };
-                (
-                    tr(language, "Reading website"),
-                    tr(language, "Preparing the answer from these sources."),
-                    query,
-                    websites,
-                    Some(url),
-                    success(),
-                    "LIVE",
-                    tr(language, "Search query"),
-                )
-            }
-            WebSearchState::Failed { message } => (
-                tr(language, "Web search"),
-                "",
-                message,
-                Vec::new(),
-                None,
-                danger(),
-                tr(language, "ERROR"),
-                tr(language, "Details"),
-            ),
-            WebSearchState::Idle | WebSearchState::Completed => return widget::column![].into(),
-        };
-
-    let website_count = websites.len();
-    let rows = websites
-        .into_iter()
-        .enumerate()
-        .map(|(index, source)| {
-            let active = active_url.as_ref().is_some_and(|url| url == &source.url);
-            website_result_row(index, source, active, language)
-        })
-        .collect::<Vec<Element<'a, Message>>>();
-    let detail_text: Element<'a, Message> = if detail.is_empty() {
-        widget::column![].into()
-    } else {
-        widget::text(detail).size(12).color(text_muted()).into()
+    let (status, detail, count, status_color) = match state {
+        WebSearchState::Searching { query } => {
+            (tr(language, "Searching the web…"), query, None, accent_2())
+        }
+        WebSearchState::Results { query, websites } => (
+            tr(language, "Reviewing results"),
+            query,
+            Some(websites.len()),
+            warning(),
+        ),
+        WebSearchState::Fetching {
+            url,
+            query,
+            websites,
+        } => (
+            tr(language, "Reading website"),
+            if query.trim().is_empty() {
+                website_host(&url)
+            } else {
+                query
+            },
+            Some(websites.len()),
+            success(),
+        ),
+        WebSearchState::Failed { message } => (tr(language, "Web search"), message, None, danger()),
+        WebSearchState::Idle | WebSearchState::Completed => return widget::column![].into(),
     };
-    let website_list: Element<'a, Message> = if website_count == 0 {
-        widget::column![].into()
-    } else {
-        widget::column![
-            Space::new().height(Length::Fixed(10.0)),
-            widget::text(format!(
-                "{} · {}",
-                tr(language, "Websites found"),
-                website_count
-            ))
-            .size(10)
-            .color(text_faint()),
-            Space::new().height(Length::Fixed(5.0)),
-            widget::Column::with_children(rows).spacing(iced::Pixels(5.0)),
-        ]
-        .into()
-    };
+    let detail = ellipsize_chat_title(&detail, 72);
+    let result_count: Element<'a, Message> = count.map_or_else(
+        || widget::column![].into(),
+        |count| {
+            container(
+                widget::text(format!("{count} {}", tr(language, "found")))
+                    .size(10)
+                    .color(status_color),
+            )
+            .padding([4, 7])
+            .style(chip_style(status_color))
+            .into()
+        },
+    );
 
-    container(widget::column![
-        widget::row![
-            widget::column![
-                widget::text(tr(language, "Web search activity"))
-                    .size(11)
-                    .color(accent_2()),
-                Space::new().height(Length::Fixed(3.0)),
-                widget::text(status).size(16).color(text_main()),
-            ]
+    container(widget::row![
+        widget::text("●").size(10).color(status_color),
+        Space::new().width(Length::Fixed(7.0)),
+        widget::text(status)
+            .size(12)
+            .color(status_color)
+            .wrapping(Wrapping::None),
+        Space::new().width(Length::Fixed(9.0)),
+        widget::text(detail)
+            .size(12)
+            .color(text_muted())
+            .wrapping(Wrapping::None)
             .width(Length::Fill),
-            container(widget::text(badge).size(10).color(status_color))
-                .padding([5, 8])
-                .style(chip_style(status_color)),
-        ],
-        Space::new().height(Length::Fixed(7.0)),
-        detail_text,
-        Space::new().height(Length::Fixed(8.0)),
-        container(widget::row![
-            widget::text(field_label).size(10).color(text_faint()),
-            Space::new().width(Length::Fixed(8.0)),
-            widget::text(query).size(12).color(text_main()),
-        ])
-        .padding([8, 10])
-        .width(Length::Fill)
-        .style(flat_card_style),
-        website_list,
+        result_count,
     ])
-    .padding(14)
+    .padding([8, 10])
     .width(Length::Fill)
+    .clip(true)
     .style(web_activity_style)
     .into()
 }
@@ -1135,7 +1140,7 @@ fn message_bubble<'a>(
     language: Language,
 ) -> Element<'a, Message> {
     match message {
-        Correspondence::User { text, image } => widget::row![
+        Correspondence::User { text, images } => widget::row![
             Space::new().width(Length::Fill),
             container(widget::column![
                 widget::text(tr(language, "You"))
@@ -1147,11 +1152,7 @@ fn message_bubble<'a>(
                     })
                     .align_x(Horizontal::Right),
                 Space::new().height(Length::Fixed(6.0)),
-                if let Some(image) = image.as_ref() {
-                    image_preview(image, false, language)
-                } else {
-                    widget::column![].into()
-                },
+                image_previews(&images, false, language),
                 widget::text(text)
                     .size(text_size)
                     .align_x(Horizontal::Right),
@@ -1379,7 +1380,7 @@ impl Program {
                 .padding(0)
                 .width(Length::Fill);
 
-                container(content)
+                container(widget::scrollable(content).height(Length::Fill))
                     .padding(18)
                     .width(Length::Fill)
                     .height(Length::Fill)
@@ -1391,9 +1392,18 @@ impl Program {
                 let bots_list = self.app_state.bots_list.lock().unwrap().clone();
                 let copied_text = self.last_copied_text.clone();
                 let local_ollamastate = self.app_state.ollama_state.lock().unwrap().clone();
-                let web_search_state = self.web_search_state.clone();
-
-                let response_text = self.response.response_as_string.lock().unwrap().clone();
+                let active_prompt = self.current_active_prompt();
+                let is_processing = active_prompt.is_some();
+                let current_web_search_enabled = active_prompt
+                    .map(|job| job.web_search_enabled)
+                    .unwrap_or(self.web_search_for_chat);
+                let web_search_state = active_prompt
+                    .map(|job| job.web_search_state.clone())
+                    .unwrap_or(WebSearchState::Idle);
+                let response_text = active_prompt
+                    .and_then(|job| job.response_as_string.lock().ok())
+                    .map(|response| response.clone())
+                    .unwrap_or_default();
                 let (live_thinking, _) = split_thinking_text(&response_text);
 
                 let chat_messages = {
@@ -1434,8 +1444,31 @@ impl Program {
                 .on_submit(Message::Prompt(self.prompt.prompt.clone()))
                 .on_input(Message::UpdatePrompt)
                 .style(text_input_style);
+                let web_toggle: Element<Message> = if is_processing {
+                    container(
+                        widget::text(if current_web_search_enabled {
+                            tr(language, "Web on")
+                        } else {
+                            tr(language, "Web off")
+                        })
+                        .size(12)
+                        .color(text_muted()),
+                    )
+                    .padding([7, 9])
+                    .style(chip_style(text_muted()))
+                    .into()
+                } else {
+                    mini_button(
+                        if current_web_search_enabled {
+                            tr(language, "Web on")
+                        } else {
+                            tr(language, "Web off")
+                        },
+                        Message::ToggleChatWebSearch,
+                    )
+                };
 
-                let mut chat_widgets: Vec<Element<Message>> = chat_messages
+                let chat_widgets: Vec<Element<Message>> = chat_messages
                     .iter()
                     .enumerate()
                     .flat_map(|(index, message)| {
@@ -1464,17 +1497,10 @@ impl Program {
                     })
                     .collect();
 
-                if !self.is_processing
-                    && !response_text.trim().is_empty()
-                    && matches!(chat_messages.last(), Some(Correspondence::Bot { .. }))
-                {
-                    chat_widgets.pop();
-                    chat_widgets.pop();
-                }
-
                 let online = local_ollamastate.to_lowercase() != "offline";
                 let status_color = if online { success() } else { danger() };
-                let debug_color = if self.debug_message.clone().is_error {
+                let visible_debug = self.current_debug_message().clone();
+                let debug_color = if visible_debug.is_error {
                     danger()
                 } else {
                     success()
@@ -1519,104 +1545,131 @@ impl Program {
                 .width(Length::Fixed(132.0))
                 .into();
 
-                let live_response: Element<Message> =
-                    if self.is_processing || !response_text.trim().is_empty() {
-                        let response_model_name = self
-                            .active_response_model_name
-                            .clone()
-                            .unwrap_or_else(|| active_model_name.clone());
-
-                        let elapsed_seconds = self.prompt.prompt_time_sent.elapsed().as_secs();
-                        let label = if self.is_processing && language == Language::Spanish {
-                            format!("{response_model_name} · Pensando ({elapsed_seconds}s)")
-                        } else if self.is_processing {
-                            format!("{response_model_name} · Thinking ({elapsed_seconds}s)")
-                        } else {
-                            response_model_name
-                        };
-
-                        let live_reasoning: Element<Message> = if live_thinking.is_empty() {
-                            widget::column![].into()
-                        } else {
-                            let expanded = self.expanded_thinking.contains(&usize::MAX);
-                            let details: Element<Message> = if expanded {
-                                container(
-                                    widget::text(live_thinking.clone())
-                                        .size(user_information.text_size - 1.0)
-                                        .color(text_muted()),
-                                )
-                                .padding(12)
-                                .width(Length::Fill)
-                                .style(flat_card_style)
-                                .into()
+                let live_response: Element<Message> = if let Some(active_prompt) = active_prompt {
+                    let response_model_name = active_prompt.model_name.clone();
+                    let elapsed_seconds = active_prompt.started_at.elapsed().as_secs();
+                    let activity = match &web_search_state {
+                        WebSearchState::Searching { .. } => tr(language, "Searching"),
+                        WebSearchState::Results { .. } => tr(language, "Reviewing results"),
+                        WebSearchState::Fetching { .. } => tr(language, "Reading website"),
+                        WebSearchState::Failed { .. } => tr(language, "Web search"),
+                        WebSearchState::Idle | WebSearchState::Completed => {
+                            if language == Language::Spanish {
+                                "Pensando"
                             } else {
-                                widget::column![].into()
-                            };
-                            widget::column![
-                                mini_button(
-                                    tr(
-                                        language,
-                                        if expanded {
-                                            "▾ Hide thinking"
-                                        } else {
-                                            "▸ Show thinking"
-                                        }
-                                    ),
-                                    Message::ToggleThinking(usize::MAX),
-                                ),
-                                details,
-                                Space::new().height(Length::Fixed(7.0)),
-                            ]
-                            .into()
-                        };
-
-                        widget::row![
-                            Space::new().width(Length::Fixed(8.0)),
-                            container(widget::column![
-                                widget::row![
-                                    widget::text(label).size(12).color(accent_2()),
-                                    Space::new().width(Length::Fill),
-                                ],
-                                Space::new().height(Length::Fixed(8.0)),
-                                live_reasoning,
-                                markdown_with_code_copy(
-                                    &self.response.parsed_markdown,
-                                    user_information.text_size,
-                                    copied_text.as_ref(),
-                                    language,
-                                ),
-                            ])
-                            .padding(14)
-                            .width(Length::Fill)
-                            .style(bot_bubble_style),
-                            Space::new().width(Length::Fixed(42.0)),
-                        ]
-                        .into()
-                    } else if chat_messages.is_empty() {
-                        container(
-                            widget::column![
-                                widget::text(tr(language, "Ready when you are."))
-                                    .size(22)
-                                    .color(text_main())
-                                    .align_x(Horizontal::Center),
-                                Space::new().height(Length::Fixed(8.0)),
-                                widget::text(tr(
-                                    language,
-                                    "Choose a model, type a prompt, and start chatting locally."
-                                ))
-                                .size(14)
-                                .color(text_muted())
-                                .align_x(Horizontal::Center),
-                            ]
-                            .align_x(Horizontal::Center),
-                        )
-                        .padding(30)
-                        .width(Length::Fill)
-                        .style(flat_card_style)
-                        .into()
+                                "Thinking"
+                            }
+                        }
+                    };
+                    let label = ellipsize_chat_title(
+                        &format!("{response_model_name} · {activity} ({elapsed_seconds}s)"),
+                        64,
+                    );
+                    let web_search_activity_visible = !matches!(
+                        &web_search_state,
+                        WebSearchState::Idle | WebSearchState::Completed
+                    );
+                    let search_activity = web_search_activity(web_search_state.clone(), language);
+                    let search_gap: Element<Message> = if web_search_activity_visible {
+                        Space::new().height(Length::Fixed(8.0)).into()
                     } else {
                         widget::column![].into()
                     };
+
+                    let live_reasoning: Element<Message> = if live_thinking.is_empty() {
+                        widget::column![].into()
+                    } else {
+                        let expanded = self.expanded_thinking.contains(&usize::MAX);
+                        let details: Element<Message> = if expanded {
+                            container(
+                                widget::text(live_thinking.clone())
+                                    .size(user_information.text_size - 1.0)
+                                    .color(text_muted()),
+                            )
+                            .padding(12)
+                            .width(Length::Fill)
+                            .style(flat_card_style)
+                            .into()
+                        } else {
+                            widget::column![].into()
+                        };
+                        widget::column![
+                            mini_button(
+                                tr(
+                                    language,
+                                    if expanded {
+                                        "▾ Hide thinking"
+                                    } else {
+                                        "▸ Show thinking"
+                                    }
+                                ),
+                                Message::ToggleThinking(usize::MAX),
+                            ),
+                            details,
+                            Space::new().height(Length::Fixed(7.0)),
+                        ]
+                        .into()
+                    };
+
+                    widget::row![
+                        Space::new().width(Length::Fixed(8.0)),
+                        container(widget::column![
+                            widget::row![
+                                container(
+                                    widget::text(label)
+                                        .size(12)
+                                        .color(accent_2())
+                                        .wrapping(Wrapping::None)
+                                )
+                                .width(Length::Fill)
+                                .clip(true),
+                                Space::new().width(Length::Fixed(10.0)),
+                                widget::progress_bar(0.0..=1.0, self.prompt_progress())
+                                    .length(Length::Fixed(96.0))
+                                    .girth(Length::Fixed(5.0)),
+                            ],
+                            Space::new().height(Length::Fixed(8.0)),
+                            search_activity,
+                            search_gap,
+                            live_reasoning,
+                            markdown_with_code_copy(
+                                &active_prompt.parsed_markdown,
+                                user_information.text_size,
+                                copied_text.as_ref(),
+                                language,
+                            ),
+                        ])
+                        .padding(14)
+                        .width(Length::Fill)
+                        .style(bot_bubble_style),
+                        Space::new().width(Length::Fixed(42.0)),
+                    ]
+                    .into()
+                } else if chat_messages.is_empty() {
+                    container(
+                        widget::column![
+                            widget::text(tr(language, "Ready when you are."))
+                                .size(22)
+                                .color(text_main())
+                                .align_x(Horizontal::Center),
+                            Space::new().height(Length::Fixed(8.0)),
+                            widget::text(tr(
+                                language,
+                                "Choose a model, type a prompt, and start chatting locally."
+                            ))
+                            .size(14)
+                            .color(text_muted())
+                            .align_x(Horizontal::Center),
+                        ]
+                        .align_x(Horizontal::Center),
+                    )
+                    .padding(30)
+                    .width(Length::Fill)
+                    .style(flat_card_style)
+                    .into()
+                } else {
+                    widget::column![].into()
+                };
 
                 let offline_hint: Element<Message> = if !online {
                     container(widget::row![
@@ -1668,17 +1721,6 @@ impl Program {
                     widget::column![].into()
                 };
 
-                let web_search_activity_visible = !matches!(
-                    &web_search_state,
-                    WebSearchState::Idle | WebSearchState::Completed
-                );
-                let web_search_status = web_search_activity(web_search_state, language);
-                let web_search_gap: Element<Message> = if web_search_activity_visible {
-                    Space::new().height(Length::Fixed(10.0)).into()
-                } else {
-                    widget::column![].into()
-                };
-
                 let chat_sidebar: Element<Message> = if self.chat_menu_open {
                     let mut entries: Vec<Element<Message>> = vec![
                         primary_button(tr(language, "＋ New chat"), Message::NewChat),
@@ -1692,23 +1734,119 @@ impl Program {
                             Message::ToggleTemporaryChat,
                         ),
                         Space::new().height(Length::Fixed(14.0)).into(),
-                        widget::text(if self.temporary_chat {
-                            tr(language, "Temporary · not saved")
-                        } else {
-                            tr(language, "Saved chats")
-                        })
-                        .size(13)
-                        .color(text_muted())
-                        .into(),
                     ];
-                    for saved in &self.saved_chats {
-                        let selected = saved.id == self.current_chat_id;
+                    let has_temporary_chats = self.temporary_chat
+                        || !self.temporary_chats.is_empty()
+                        || self.active_prompts.values().any(|job| job.temporary);
+                    if has_temporary_chats {
+                        entries.push(
+                            widget::text(tr(language, "Temporary chats"))
+                                .size(13)
+                                .color(text_muted())
+                                .into(),
+                        );
+                    }
+                    let mut temporary_jobs = self
+                        .active_prompts
+                        .iter()
+                        .filter(|(_, job)| job.temporary)
+                        .collect::<Vec<_>>();
+                    temporary_jobs.sort_by_key(|(_, job)| job.started_at);
+                    for (chat_id, job) in temporary_jobs {
+                        let title = job
+                            .chat_history
+                            .lock()
+                            .ok()
+                            .and_then(|chat| {
+                                chat.messages.iter().find_map(|message| match message {
+                                    Correspondence::User { text, .. } => Some(text.clone()),
+                                    Correspondence::Bot { .. } => None,
+                                })
+                            })
+                            .unwrap_or_else(|| tr(language, "Temporary chat").to_string());
+                        let title = format!("T · {}", ellipsize_chat_title(&title, 16));
                         entries.push(
                             container(widget::row![
-                                widget::button(widget::text(saved.title.clone()).size(13))
-                                    .on_press(Message::OpenChat(saved.id.clone()))
-                                    .style(chat_title_button_style)
-                                    .width(Length::Fill),
+                                widget::button(
+                                    widget::text(title).size(13).wrapping(Wrapping::None)
+                                )
+                                .on_press(Message::OpenChat(chat_id.clone()))
+                                .style(chat_title_button_style)
+                                .clip(true)
+                                .width(Length::Fill),
+                                widget::progress_bar(0.0..=1.0, self.prompt_progress())
+                                    .length(Length::Fixed(42.0))
+                                    .girth(Length::Fixed(4.0)),
+                            ])
+                            .padding(4)
+                            .width(Length::Fill)
+                            .style(chat_entry_style(chat_id == &self.current_chat_id))
+                            .into(),
+                        );
+                    }
+                    let mut temporary_sessions = self.temporary_chats.iter().collect::<Vec<_>>();
+                    temporary_sessions.sort_by_key(|(chat_id, _)| *chat_id);
+                    for (chat_id, session) in temporary_sessions {
+                        let title = session
+                            .chat_history
+                            .lock()
+                            .ok()
+                            .and_then(|chat| {
+                                chat.messages.iter().find_map(|message| match message {
+                                    Correspondence::User { text, .. } => Some(text.clone()),
+                                    Correspondence::Bot { .. } => None,
+                                })
+                            })
+                            .unwrap_or_else(|| tr(language, "Temporary chat").to_string());
+                        let title = format!("T · {}", ellipsize_chat_title(&title, 16));
+                        entries.push(
+                            container(widget::row![
+                                widget::button(
+                                    widget::text(title).size(13).wrapping(Wrapping::None)
+                                )
+                                .on_press(Message::OpenChat(chat_id.clone()))
+                                .style(chat_title_button_style)
+                                .clip(true)
+                                .width(Length::Fill),
+                                mini_button("×", Message::DeleteTemporaryChat(chat_id.clone())),
+                            ])
+                            .padding(4)
+                            .width(Length::Fill)
+                            .style(chat_entry_style(chat_id == &self.current_chat_id))
+                            .into(),
+                        );
+                    }
+                    if has_temporary_chats {
+                        entries.push(Space::new().height(Length::Fixed(8.0)).into());
+                    }
+                    entries.push(
+                        widget::text(tr(language, "Saved chats"))
+                            .size(13)
+                            .color(text_muted())
+                            .into(),
+                    );
+                    for saved in &self.saved_chats {
+                        let selected = saved.id == self.current_chat_id;
+                        let title = ellipsize_chat_title(&saved.title, 20);
+                        let working = self.active_prompts.contains_key(&saved.id);
+                        let working_progress: Element<Message> = if working {
+                            widget::progress_bar(0.0..=1.0, self.prompt_progress())
+                                .length(Length::Fixed(42.0))
+                                .girth(Length::Fixed(4.0))
+                                .into()
+                        } else {
+                            widget::column![].into()
+                        };
+                        entries.push(
+                            container(widget::row![
+                                widget::button(
+                                    widget::text(title).size(13).wrapping(Wrapping::None)
+                                )
+                                .on_press(Message::OpenChat(saved.id.clone()))
+                                .style(chat_title_button_style)
+                                .clip(true)
+                                .width(Length::Fill),
+                                working_progress,
                                 mini_button(
                                     tr(language, if saved.pinned { "Unpin" } else { "Pin" }),
                                     Message::ToggleChatPin(saved.id.clone()),
@@ -1749,16 +1887,76 @@ impl Program {
                         ),
                         Space::new().height(Length::Fixed(4.0)).into(),
                     ];
-                    for saved in &self.saved_chats {
-                        let short_title = saved.title.chars().take(8).collect::<String>();
+                    let mut temporary_jobs = self
+                        .active_prompts
+                        .iter()
+                        .filter(|(_, job)| job.temporary)
+                        .collect::<Vec<_>>();
+                    temporary_jobs.sort_by_key(|(_, job)| job.started_at);
+                    for (chat_id, _) in temporary_jobs {
+                        compact_entries.push(
+                            container(widget::row![
+                                widget::button(
+                                    widget::text("T · work").size(11).wrapping(Wrapping::None),
+                                )
+                                .on_press(Message::OpenChat(chat_id.clone()))
+                                .padding([6, 4])
+                                .style(chat_title_button_style)
+                                .clip(true)
+                                .width(Length::Fill),
+                                widget::progress_bar(0.0..=1.0, self.prompt_progress())
+                                    .length(Length::Fixed(14.0))
+                                    .girth(Length::Fixed(3.0)),
+                            ])
+                            .padding(2)
+                            .width(Length::Fill)
+                            .style(chat_entry_style(chat_id == &self.current_chat_id))
+                            .into(),
+                        );
+                    }
+                    let mut temporary_sessions = self.temporary_chats.keys().collect::<Vec<_>>();
+                    temporary_sessions.sort();
+                    for chat_id in temporary_sessions {
                         compact_entries.push(
                             container(
-                                widget::button(widget::text(short_title).size(11))
-                                    .on_press(Message::OpenChat(saved.id.clone()))
-                                    .padding([6, 4])
-                                    .style(chat_title_button_style)
-                                    .width(Length::Fill),
+                                widget::button(
+                                    widget::text("T · done").size(11).wrapping(Wrapping::None),
+                                )
+                                .on_press(Message::OpenChat(chat_id.clone()))
+                                .padding([6, 4])
+                                .style(chat_title_button_style)
+                                .clip(true)
+                                .width(Length::Fill),
                             )
+                            .padding(2)
+                            .width(Length::Fill)
+                            .style(chat_entry_style(chat_id == &self.current_chat_id))
+                            .into(),
+                        );
+                    }
+                    for saved in &self.saved_chats {
+                        let short_title = ellipsize_chat_title(&saved.title, 8);
+                        let working = self.active_prompts.contains_key(&saved.id);
+                        let working_progress: Element<Message> = if working {
+                            widget::progress_bar(0.0..=1.0, self.prompt_progress())
+                                .length(Length::Fixed(14.0))
+                                .girth(Length::Fixed(3.0))
+                                .into()
+                        } else {
+                            widget::column![].into()
+                        };
+                        compact_entries.push(
+                            container(widget::row![
+                                widget::button(
+                                    widget::text(short_title).size(11).wrapping(Wrapping::None),
+                                )
+                                .on_press(Message::OpenChat(saved.id.clone()))
+                                .padding([6, 4])
+                                .style(chat_title_button_style)
+                                .clip(true)
+                                .width(Length::Fill),
+                                working_progress,
+                            ])
                             .padding(2)
                             .width(Length::Fill)
                             .style(chat_entry_style(saved.id == self.current_chat_id))
@@ -1799,14 +1997,14 @@ impl Program {
                             .style(chip_style(status_color)),
                             Space::new().width(Length::Fixed(8.0)),
                             container(
-                                widget::text(if self.web_search_for_chat {
+                                widget::text(if current_web_search_enabled {
                                     tr(language, "Web on")
                                 } else {
                                     tr(language, "Web off")
                                 })
                                 .size(11)
                                 .color(
-                                    if self.web_search_for_chat {
+                                    if current_web_search_enabled {
                                         success()
                                     } else {
                                         text_muted()
@@ -1815,7 +2013,7 @@ impl Program {
                             )
                             .padding([8, 11])
                             .style(chip_style(
-                                if self.web_search_for_chat {
+                                if current_web_search_enabled {
                                     success()
                                 } else {
                                     text_muted()
@@ -1892,29 +2090,16 @@ impl Program {
                     .height(Length::Fill)
                     .style(panel_style),
                     Space::new().height(Length::Fixed(10.0)),
-                    web_search_status,
-                    web_search_gap,
                     container(widget::column![
-                        if let Some(image) = self.pending_image.as_ref() {
-                            image_preview(image, true, language)
-                        } else {
-                            widget::column![].into()
-                        },
+                        image_previews(&self.pending_images, true, language),
                         container(widget::row![
                             mini_button(tr(language, "＋ Image"), Message::PickImage),
                             Space::new().width(Length::Fixed(6.0)),
-                            mini_button(
-                                if self.web_search_for_chat {
-                                    tr(language, "Web on")
-                                } else {
-                                    tr(language, "Web off")
-                                },
-                                Message::ToggleChatWebSearch
-                            ),
+                            web_toggle,
                             Space::new().width(Length::Fixed(6.0)),
                             prompt,
                             Space::new().width(Length::Fixed(6.0)),
-                            if self.is_processing {
+                            if is_processing {
                                 primary_button(tr(language, "Stop"), Message::StopResponse)
                             } else {
                                 primary_button(
@@ -1937,7 +2122,7 @@ impl Program {
                         offline_hint,
                         missing_bots_hint,
                         widget::row![
-                            widget::text(self.debug_message.clone().message)
+                            widget::text(visible_debug.message)
                                 .size(13)
                                 .color(debug_color),
                         ],
@@ -1962,6 +2147,10 @@ impl Program {
             GUIState::Images => {
                 let bots_list = self.app_state.bots_list.lock().unwrap().clone();
                 let selected_model = self.user_information.model.clone();
+                let active_prompt = self.current_active_prompt();
+                let vision_is_live = active_prompt.is_some_and(|job| job.had_image);
+                let completed_vision = self.vision_responses.get(&self.current_chat_id);
+                let visible_debug = self.current_debug_message().clone();
                 let model_selector =
                     widget::pick_list(bots_list, selected_model, Message::ModelChange)
                         .padding([12, 14])
@@ -1970,9 +2159,8 @@ impl Program {
                         .menu_style(pick_list_menu_style)
                         .width(Length::Fill);
 
-                let attachment: Element<Message> = if let Some(image) = self.pending_image.as_ref()
-                {
-                    image_preview(image, true, language)
+                let attachment: Element<Message> = if !self.pending_images.is_empty() {
+                    image_previews(&self.pending_images, true, language)
                 } else {
                     container(widget::column![
                         widget::text(tr(language, "Add an image for vision"))
@@ -2034,31 +2222,29 @@ impl Program {
                 .on_input(Message::UpdatePrompt)
                 .style(text_input_style);
 
-                let vision_action: Element<Message> = if self.user_information.vision_supported
-                    != Some(false)
-                    && self.pending_image.is_some()
+                let vision_action: Element<Message> = if vision_is_live {
+                    primary_button(tr(language, "Stop"), Message::StopResponse)
+                } else if self.user_information.vision_supported != Some(false)
+                    && !self.pending_images.is_empty()
                 {
-                    if self.is_processing {
-                        primary_button(tr(language, "Stop"), Message::StopResponse)
-                    } else {
-                        primary_button(
-                            tr(language, "Ask about image"),
-                            Message::Prompt(self.prompt.prompt.clone()),
-                        )
-                    }
+                    primary_button(
+                        tr(language, "Ask about image"),
+                        Message::Prompt(self.prompt.prompt.clone()),
+                    )
                 } else {
                     widget::column![].into()
                 };
 
-                let vision_is_live = self.is_processing && self.active_response_had_image;
-                let vision_response: Element<Message> =
-                    if vision_is_live || !self.last_vision_response.trim().is_empty() {
-                        let markdown = if vision_is_live {
-                            &self.response.parsed_markdown
-                        } else {
-                            &self.vision_markdown_cache
-                        };
-                        container(widget::column![
+                let vision_response: Element<Message> = if vision_is_live
+                    || completed_vision.is_some()
+                {
+                    let markdown = active_prompt
+                        .filter(|job| job.had_image)
+                        .map(|job| job.parsed_markdown.as_slice())
+                        .or_else(|| completed_vision.map(|response| response.markdown.as_slice()))
+                        .unwrap_or_default();
+                    container(widget::column![
+                        widget::row![
                             widget::text(tr(
                                 language,
                                 if vision_is_live {
@@ -2069,21 +2255,32 @@ impl Program {
                             ))
                             .size(12)
                             .color(accent_2()),
-                            Space::new().height(Length::Fixed(8.0)),
-                            markdown_with_code_copy(
-                                markdown,
-                                self.user_information.text_size,
-                                self.last_copied_text.as_ref(),
-                                language,
-                            ),
-                        ])
-                        .padding(14)
-                        .width(Length::Fill)
-                        .style(bot_bubble_style)
-                        .into()
-                    } else {
-                        widget::column![].into()
-                    };
+                            Space::new().width(Length::Fill),
+                            if vision_is_live {
+                                widget::progress_bar(0.0..=1.0, self.prompt_progress())
+                                    .length(Length::Fixed(96.0))
+                                    .girth(Length::Fixed(5.0))
+                            } else {
+                                widget::progress_bar(0.0..=1.0, 0.0)
+                                    .length(Length::Fixed(0.0))
+                                    .girth(Length::Fixed(0.0))
+                            },
+                        ],
+                        Space::new().height(Length::Fixed(8.0)),
+                        markdown_with_code_copy(
+                            markdown,
+                            self.user_information.text_size,
+                            self.last_copied_text.as_ref(),
+                            language,
+                        ),
+                    ])
+                    .padding(14)
+                    .width(Length::Fill)
+                    .style(bot_bubble_style)
+                    .into()
+                } else {
+                    widget::column![].into()
+                };
 
                 let generated_cards: Vec<Element<Message>> = self
                     .generated_images
@@ -2097,8 +2294,11 @@ impl Program {
                                 .content_fit(iced::ContentFit::Contain),
                             Space::new().height(Length::Fixed(8.0)),
                             widget::row![
-                                widget::text(path.clone()).size(11).color(text_muted()),
-                                Space::new().width(Length::Fill),
+                                widget::text(path.clone())
+                                    .size(11)
+                                    .color(text_muted())
+                                    .wrapping(Wrapping::WordOrGlyph)
+                                    .width(Length::Fill),
                                 mini_button(
                                     tr(language, "Copy image"),
                                     Message::CopyImage(path.clone())
@@ -2206,9 +2406,9 @@ impl Program {
                     generation_panel,
                     Space::new().height(Length::Fixed(14.0)),
                     generated_gallery,
-                    widget::text(self.debug_message.message.clone())
+                    widget::text(visible_debug.message)
                         .size(13)
-                        .color(if self.debug_message.is_error { danger() } else { success() }),
+                        .color(if visible_debug.is_error { danger() } else { success() }),
                 ];
 
                 container(widget::scrollable(content))
@@ -2575,6 +2775,18 @@ impl Program {
                                         .padding(8)
                                         .style(chip_style(accent_2())),
                                     ],
+                                    Space::new().height(Length::Fixed(12.0)),
+                                    widget::row![
+                                        setting_label(
+                                            tr(language, "Allow a follow-up search"),
+                                            tr(language, "Lets the model run one additional, distinct search when the first results are insufficient.")
+                                        ),
+                                        widget::checkbox(
+                                            self.web_search_settings.allow_multiple_searches
+                                        )
+                                        .label(tr(language, "Enabled"))
+                                        .on_toggle(|_| Message::ToggleMultipleWebSearches),
+                                    ],
                                 ]
                             )
                             .padding(16)
@@ -2592,7 +2804,8 @@ impl Program {
                                         ),
                                         widget::text(self.chat_storage_dir.display().to_string())
                                             .size(12)
-                                            .color(text_muted()),
+                                            .color(text_muted())
+                                            .wrapping(Wrapping::WordOrGlyph),
                                     ]
                                     .width(Length::Fill),
                                     secondary_button(
@@ -2856,5 +3069,30 @@ impl Program {
                     .style(app_background_style)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ellipsize_chat_title;
+
+    #[test]
+    fn chat_title_ellipsis_is_unicode_safe() {
+        assert_eq!(ellipsize_chat_title("🦀 Rustaceans unite", 6), "🦀 Rus…");
+    }
+
+    #[test]
+    fn chat_title_ellipsis_keeps_short_titles_unchanged() {
+        assert_eq!(ellipsize_chat_title("Short title", 20), "Short title");
+        assert_eq!(ellipsize_chat_title("12345678", 8), "12345678");
+    }
+
+    #[test]
+    fn chat_title_ellipsis_forces_titles_onto_one_line() {
+        assert_eq!(
+            ellipsize_chat_title("first line\nsecond\tline", 18),
+            "first line second…"
+        );
+        assert_eq!(ellipsize_chat_title("anything", 0), "");
     }
 }

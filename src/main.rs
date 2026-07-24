@@ -23,8 +23,7 @@ mod web_search;
 
 use crate::app::{
     AppState, Channels, ChatImage, Correspondence, CurrentChat, DebugMessage, History,
-    HostLocation, Language, Log, Prompt, Response, SavedChat, SystemPrompt, ThinkingLevel,
-    UserInformation,
+    HostLocation, Language, Log, Prompt, SavedChat, SystemPrompt, ThinkingLevel, UserInformation,
 };
 use crate::web_search::{
     BraveSearchProvider, ToolLoopRequest, WebSearchProviderKind, WebSearchSettings, WebSearchState,
@@ -34,7 +33,7 @@ use crate::web_search::{
 /// Tick points:
 /// Each tick occurs every TICK_MS; these constants decide what happens on each tick.
 const VERSION_TICK: i32 = 2;
-const MAX_TICK: i32 = 50;
+const MAX_TICK: i32 = 59;
 const BOT_LIST_TICK: i32 = 3;
 const TICK_MS: u64 = 200;
 const DEFAULT_MAX_RESPONSE_TOKENS: u32 = 10_240;
@@ -44,7 +43,7 @@ const MAX_RESPONSE_TOKENS: u32 = 65_536;
 const MIN_CONTEXT_TOKENS: u32 = 4_096;
 const MAX_CONTEXT_TOKENS: u32 = 262_144;
 
-const APP_VERSION: &str = "0.5.1";
+const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(PartialEq, Clone, Copy)]
 pub enum GUIState {
@@ -61,6 +60,7 @@ enum Message {
     ToggleFastStreaming,
     ToggleChatMenu,
     ToggleWebSearch,
+    ToggleMultipleWebSearches,
     ToggleChatWebSearch,
     WebSearchProviderChange(WebSearchProviderKind),
     WebSearchApiKeyChange(String),
@@ -71,10 +71,12 @@ enum Message {
     OpenChat(String),
     ToggleChatPin(String),
     DeleteChat(String),
+    DeleteTemporaryChat(String),
     ToggleTemporaryChat,
     ChooseChatFolder,
     ChatFolderSelected(Option<PathBuf>),
     AsyncResult(()),
+    PromptFinished(String),
     ListPrompt,
     ThinkingLevelChange(ThinkingLevel),
     ToggleImages,
@@ -82,7 +84,8 @@ enum Message {
     DropImage(PathBuf),
     PasteImage,
     ImageLoaded(Result<ChatImage, String>),
-    RemoveImage,
+    ImagesLoaded(Result<Vec<ChatImage>, String>),
+    RemoveImage(usize),
     GenerateImage,
     ImageGenerated(Result<String, String>),
     CopyImage(String),
@@ -117,9 +120,37 @@ enum Message {
     ChangePort(String),
 }
 
+struct ActivePrompt {
+    chat_history: Arc<Mutex<CurrentChat>>,
+    response_as_string: Arc<Mutex<String>>,
+    parsed_markdown: Vec<markdown::Item>,
+    markdown_receiver: crossbeam_channel::Receiver<Vec<markdown::Item>>,
+    web_search_state: WebSearchState,
+    web_search_state_receiver: crossbeam_channel::Receiver<WebSearchState>,
+    cancel: Arc<AtomicBool>,
+    model_name: String,
+    started_at: Instant,
+    response_start_index: usize,
+    had_image: bool,
+    web_search_enabled: bool,
+    temporary: bool,
+}
+
+struct TemporaryChatSession {
+    chat_history: Arc<Mutex<CurrentChat>>,
+    web_search_enabled: bool,
+}
+
+struct VisionResponse {
+    markdown: Vec<markdown::Item>,
+}
+
 struct Program {
-    is_processing: bool,
-    response_cancel: Option<Arc<AtomicBool>>,
+    active_prompts: HashMap<String, ActivePrompt>,
+    temporary_chats: HashMap<String, TemporaryChatSession>,
+    chat_notices: HashMap<String, (DebugMessage, Instant)>,
+    chat_notice_sender: crossbeam_channel::Sender<(String, DebugMessage)>,
+    chat_notice_receiver: crossbeam_channel::Receiver<(String, DebugMessage)>,
     current_tick: i32,
     installing_model: String,
 
@@ -134,20 +165,14 @@ struct Program {
     /// User messages use None. Bot messages store the model that generated them.
     chat_model_name_cache: Vec<Option<String>>,
 
-    /// Model currently generating a response. This prevents finished messages from
-    /// being relabelled if the user changes the dropdown later.
-    active_response_model_name: Option<String>,
-
     /// Used for brief copy feedback animations/buttons.
     last_copied_text: Option<String>,
     last_copied_at: Option<Instant>,
 
-    pending_image: Option<ChatImage>,
+    pending_images: Vec<ChatImage>,
     generated_images: Vec<String>,
     is_generating_image: bool,
-    active_response_had_image: bool,
-    last_vision_response: String,
-    vision_markdown_cache: Vec<markdown::Item>,
+    vision_responses: HashMap<String, VisionResponse>,
 
     /// Message indexes whose reasoning disclosure is open. Reasoning is hidden by default.
     expanded_thinking: HashSet<usize>,
@@ -156,7 +181,6 @@ struct Program {
     app_state: AppState,
     channels: Channels,
     user_information: UserInformation,
-    response: Response,
     prompt: Prompt,
     batch_tokens: i32,
     fast_streaming: bool,
@@ -164,10 +188,6 @@ struct Program {
     temporary_chat: bool,
     web_search_settings: WebSearchSettings,
     web_search_for_chat: bool,
-    web_search_state: WebSearchState,
-    web_search_state_sender: crossbeam_channel::Sender<WebSearchState>,
-    web_search_state_receiver: crossbeam_channel::Receiver<WebSearchState>,
-    discard_cancelled_web_search_updates: bool,
     current_chat_id: String,
     saved_chats: Vec<SavedChat>,
     chat_storage_dir: PathBuf,
@@ -177,6 +197,12 @@ fn default_chat_storage_dir() -> PathBuf {
     app_data_dir().join("chats")
 }
 
+#[cfg(test)]
+fn app_data_dir() -> PathBuf {
+    std::env::temp_dir().join(format!("ollama-gui-test-data-{}", std::process::id()))
+}
+
+#[cfg(not(test))]
 fn app_data_dir() -> PathBuf {
     #[cfg(target_os = "windows")]
     if let Some(base) = std::env::var_os("LOCALAPPDATA") {
@@ -369,6 +395,85 @@ fn split_thinking_text(input: &str) -> (String, String) {
     )
 }
 
+fn code_fence_language_alias(language: &str) -> Option<&'static str> {
+    match language.to_ascii_lowercase().as_str() {
+        "csharp" | "c-sharp" => Some("cs"),
+        "cplusplus" | "cxx" => Some("cpp"),
+        "golang" => Some("go"),
+        "javascriptreact" => Some("jsx"),
+        "typescriptreact" => Some("tsx"),
+        "objectivec" | "objective-c" => Some("m"),
+        "visualbasic" | "vbnet" | "vb.net" => Some("vb"),
+        _ => None,
+    }
+}
+
+/// Syntect accepts a language name or file extension, while models often emit
+/// popular aliases such as `csharp`. Normalize only opening fence info strings;
+/// code inside a fenced block is left byte-for-byte unchanged.
+fn normalize_code_fence_languages(input: &str) -> String {
+    let mut output = String::with_capacity(input.len());
+    let mut open_fence: Option<(u8, usize)> = None;
+
+    for segment in input.split_inclusive('\n') {
+        let body_length = segment.trim_end_matches(['\r', '\n']).len();
+        let body = &segment[..body_length];
+        let line_ending = &segment[body_length..];
+        let trimmed = body.trim_start();
+        let indentation_length = body.len() - trimmed.len();
+        let marker = trimmed.as_bytes().first().copied();
+        let marker_length = marker.map_or(0, |marker| {
+            trimmed
+                .as_bytes()
+                .iter()
+                .take_while(|character| **character == marker)
+                .count()
+        });
+
+        if let Some((active_marker, active_length)) = open_fence {
+            let is_closing = marker == Some(active_marker)
+                && marker_length >= active_length
+                && trimmed[marker_length..].trim().is_empty();
+            if is_closing {
+                open_fence = None;
+            }
+            output.push_str(segment);
+            continue;
+        }
+
+        if !matches!(marker, Some(b'`' | b'~')) || marker_length < 3 {
+            output.push_str(segment);
+            continue;
+        }
+
+        open_fence = Some((marker.unwrap(), marker_length));
+        let info = &trimmed[marker_length..];
+        let leading_space = info.len() - info.trim_start().len();
+        let token_start = indentation_length + marker_length + leading_space;
+        let token_length = info[leading_space..]
+            .find(char::is_whitespace)
+            .unwrap_or(info.len() - leading_space);
+        let token_end = token_start + token_length;
+        let token = &body[token_start..token_end];
+
+        if let Some(alias) = code_fence_language_alias(token) {
+            output.push_str(&body[..token_start]);
+            output.push_str(alias);
+            output.push_str(&body[token_end..]);
+            output.push_str(line_ending);
+        } else {
+            output.push_str(segment);
+        }
+    }
+
+    output
+}
+
+fn parse_markdown_items(input: &str) -> Vec<markdown::Item> {
+    let normalized = normalize_code_fence_languages(input);
+    markdown::parse(&normalized).collect()
+}
+
 fn decode_generation_line(
     input: &str,
 ) -> Result<(GenerationResponse, Option<String>), serde_json::Error> {
@@ -488,27 +593,57 @@ fn open_url(url: String) -> Task<Message> {
     )
 }
 
+fn send_chat_notice(
+    sender: &crossbeam_channel::Sender<(String, DebugMessage)>,
+    chat_id: &str,
+    message: DebugMessage,
+) {
+    let _ = sender.send((chat_id.to_string(), message));
+}
+
+fn append_failed_response(
+    chat_history: &Arc<Mutex<CurrentChat>>,
+    model: Option<String>,
+    message: String,
+) {
+    chat_history
+        .lock()
+        .unwrap()
+        .push_message(Correspondence::Bot {
+            text: message,
+            model,
+            thinking_seconds: None,
+            sources: Vec::new(),
+            web_search_used: false,
+        });
+}
+
+async fn wait_until_cancelled(cancel: &AtomicBool) {
+    while !cancel.load(Ordering::Relaxed) {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 impl Program {
-    fn reset_web_search_state(&mut self) {
-        while self.web_search_state_receiver.try_recv().is_ok() {}
-        self.web_search_state = WebSearchState::Idle;
-    }
-
-    fn cancel_response_for_chat_navigation(&mut self) {
-        if self.is_processing {
-            self.discard_cancelled_web_search_updates = true;
-        }
-        if let Some(cancel) = self.response_cancel.take() {
-            cancel.store(true, Ordering::Relaxed);
-        }
-        self.reset_web_search_state();
-    }
-
     fn new_chat_id() -> String {
         format!(
             "chat-{}",
             chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
         )
+    }
+
+    fn current_active_prompt(&self) -> Option<&ActivePrompt> {
+        self.active_prompts.get(&self.current_chat_id)
+    }
+
+    fn current_chat_is_processing(&self) -> bool {
+        self.current_active_prompt().is_some()
+    }
+
+    fn prompt_progress(&self) -> f32 {
+        let phase = (self.current_tick.rem_euclid(20) as f32) / 10.0;
+        let wave = if phase <= 1.0 { phase } else { 2.0 - phase };
+        0.12 + wave * 0.76
     }
 
     fn clear_open_chat(&mut self) {
@@ -519,19 +654,9 @@ impl Program {
         }));
         self.chat_markdown_cache.clear();
         self.chat_model_name_cache.clear();
-        self.active_response_model_name = None;
-        self.response_cancel = None;
         self.last_copied_text = None;
         self.last_copied_at = None;
-        self.response.parsed_markdown.clear();
         self.expanded_thinking.clear();
-        self.active_response_had_image = false;
-        self.last_vision_response.clear();
-        self.vision_markdown_cache.clear();
-        self.reset_web_search_state();
-        if let Ok(mut response_text) = self.response.response_as_string.lock() {
-            response_text.clear();
-        }
     }
 
     fn save_open_chat(&mut self) {
@@ -539,6 +664,14 @@ impl Program {
             return;
         }
         let chat = self.user_information.chat_history.lock().unwrap().clone();
+        self.save_chat_snapshot(
+            self.current_chat_id.clone(),
+            &chat,
+            self.web_search_for_chat,
+        );
+    }
+
+    fn save_chat_snapshot(&mut self, id: String, chat: &CurrentChat, web_search_enabled: bool) {
         if chat.messages.is_empty() {
             return;
         }
@@ -551,7 +684,7 @@ impl Program {
             })
             .filter(|title: &String| !title.is_empty())
             .unwrap_or_else(|| "New chat".into());
-        let mut saved = SavedChat::from_current(self.current_chat_id.clone(), title, &chat);
+        let mut saved = SavedChat::from_current(id, title, chat, web_search_enabled);
         if let Some(existing) = self.saved_chats.iter_mut().find(|item| item.id == saved.id) {
             saved.pinned = existing.pinned;
             *existing = saved;
@@ -565,17 +698,7 @@ impl Program {
                 .unwrap_or(self.saved_chats.len());
             self.saved_chats.insert(insert_at, saved);
         }
-        if let Err(error) = fs::create_dir_all(&self.chat_storage_dir).and_then(|_| {
-            fs::write(
-                self.chat_storage_dir.join("chats.json"),
-                serde_json::to_string_pretty(&self.saved_chats).unwrap_or_else(|_| "[]".into()),
-            )
-        }) {
-            self.set_debug_message(DebugMessage {
-                message: format!("Could not save chats: {error}"),
-                is_error: true,
-            });
-        }
+        self.persist_saved_chats();
     }
 
     fn persist_saved_chats(&mut self) {
@@ -589,6 +712,24 @@ impl Program {
                 message: format!("Could not update saved chats: {error}"),
                 is_error: true,
             });
+        }
+    }
+
+    fn persist_current_chat_web_search_setting(&mut self) {
+        if self.temporary_chat {
+            if let Some(session) = self.temporary_chats.get_mut(&self.current_chat_id) {
+                session.web_search_enabled = self.web_search_for_chat;
+            }
+            return;
+        }
+
+        if let Some(chat) = self
+            .saved_chats
+            .iter_mut()
+            .find(|chat| chat.id == self.current_chat_id)
+        {
+            chat.web_search_enabled = Some(self.web_search_for_chat);
+            self.persist_saved_chats();
         }
     }
 
@@ -665,6 +806,17 @@ impl Program {
             self.debug_message.is_error = false;
             self.debug_message_set_at = None;
         }
+        let current_chat_id = &self.current_chat_id;
+        self.chat_notices.retain(|chat_id, (_, set_at)| {
+            chat_id != current_chat_id || set_at.elapsed() < Duration::from_secs(15)
+        });
+    }
+
+    fn current_debug_message(&self) -> &DebugMessage {
+        self.chat_notices
+            .get(&self.current_chat_id)
+            .map(|(message, _)| message)
+            .unwrap_or(&self.debug_message)
     }
 
     fn refresh_chat_markdown_cache(&mut self) {
@@ -691,7 +843,7 @@ impl Program {
                     if let Some(cached) = old_markdown_cache.get(index) {
                         new_markdown_cache.push(cached.clone());
                     } else {
-                        new_markdown_cache.push(markdown::parse(&visible_text).collect());
+                        new_markdown_cache.push(parse_markdown_items(&visible_text));
                     }
 
                     let model_name = old_model_name_cache
@@ -699,7 +851,6 @@ impl Program {
                         .cloned()
                         .flatten()
                         .or_else(|| model.clone())
-                        .or_else(|| self.active_response_model_name.clone())
                         .or_else(|| Some("Unknown model".to_string()));
 
                     new_model_name_cache.push(model_name);
@@ -720,43 +871,92 @@ impl Program {
         }
     }
 
-    fn finalize_response_metadata(&mut self) {
-        let has_response = self
-            .response
-            .response_as_string
-            .lock()
-            .map(|response| !response.trim().is_empty())
-            .unwrap_or(false);
-        if !has_response {
-            self.response_cancel = None;
-            return;
-        }
-        let elapsed_seconds = self.prompt.prompt_time_sent.elapsed().as_secs().max(1);
-        let model = self.active_response_model_name.clone();
-        if let Ok(mut chat) = self.user_information.chat_history.lock()
-            && let Some(Correspondence::Bot {
-                model: stored_model,
-                thinking_seconds,
-                ..
-            }) = chat
-                .messages
-                .iter_mut()
-                .rev()
-                .find(|message| matches!(message, Correspondence::Bot { .. }))
+    fn apply_response_metadata(
+        chat: &mut CurrentChat,
+        response_start_index: usize,
+        model_name: &str,
+        elapsed_seconds: u64,
+    ) {
+        if let Some(Correspondence::Bot {
+            model: stored_model,
+            thinking_seconds,
+            ..
+        }) = chat
+            .messages
+            .iter_mut()
+            .skip(response_start_index)
+            .rev()
+            .find(|message| matches!(message, Correspondence::Bot { .. }))
         {
             if stored_model.is_none() {
-                *stored_model = model;
+                *stored_model = Some(model_name.to_string());
             }
             if thinking_seconds.is_none() {
                 *thinking_seconds = Some(elapsed_seconds);
             }
         }
-        self.response_cancel = None;
+    }
+
+    fn finalize_response_metadata(job: &ActivePrompt) {
+        let elapsed_seconds = job.started_at.elapsed().as_secs().max(1);
+        if let Ok(mut chat) = job.chat_history.lock() {
+            Self::apply_response_metadata(
+                &mut chat,
+                job.response_start_index,
+                &job.model_name,
+                elapsed_seconds,
+            );
+        }
+    }
+
+    fn finish_prompt(&mut self, chat_id: &str) {
+        let Some(job) = self.active_prompts.remove(chat_id) else {
+            return;
+        };
+        Self::finalize_response_metadata(&job);
+
+        let completed_chat = job.chat_history.lock().unwrap().clone();
+        if job.temporary {
+            self.temporary_chats.insert(
+                chat_id.to_string(),
+                TemporaryChatSession {
+                    chat_history: Arc::clone(&job.chat_history),
+                    web_search_enabled: job.web_search_enabled,
+                },
+            );
+        } else {
+            self.save_chat_snapshot(chat_id.to_string(), &completed_chat, job.web_search_enabled);
+        }
+
+        if job.had_image
+            && let Some(response) = completed_chat
+                .messages
+                .iter()
+                .skip(job.response_start_index)
+                .rev()
+                .find_map(|message| match message {
+                    Correspondence::Bot { text, .. } => Some(text.as_str()),
+                    Correspondence::User { .. } => None,
+                })
+        {
+            let (_, visible) = split_thinking_text(response);
+            self.vision_responses.insert(
+                chat_id.to_string(),
+                VisionResponse {
+                    markdown: parse_markdown_items(&visible),
+                },
+            );
+        }
+
+        if self.current_chat_id == chat_id {
+            self.user_information.chat_history = Arc::clone(&job.chat_history);
+            self.expanded_thinking.remove(&usize::MAX);
+            self.refresh_chat_markdown_cache();
+        }
     }
 
     fn prompt(&mut self, mut prompt: String) -> Task<Message> {
         if self.user_information.model.is_none() {
-            Channels::send_request_to_channel(Arc::clone(&self.channels.debounce_channel), false);
             Channels::send_request_to_channel(
                 Arc::clone(&self.channels.debug_channel),
                 DebugMessage {
@@ -772,63 +972,60 @@ impl Program {
             prompt = censor_text(&prompt);
         }
 
-        self.active_response_model_name = self.user_information.model.clone();
-        self.prompt.prompt_time_sent = Instant::now();
+        let model_name = self.user_information.model.clone().unwrap();
+        let started_at = Instant::now();
 
         let cancel = Arc::new(AtomicBool::new(false));
-        self.response_cancel = Some(Arc::clone(&cancel));
 
-        let (markdown_sender, markdown_receiver) = crossbeam_channel::unbounded();
-        self.channels.markdown_channel_reciever = markdown_receiver;
+        // Keep only the newest full Markdown snapshot. A long response can
+        // otherwise queue many increasingly large copies while its chat is in
+        // the background.
+        let (markdown_sender, markdown_receiver) = crossbeam_channel::bounded(1);
+        let markdown_receiver_for_renderer = markdown_receiver.clone();
 
-        let (tx, rx) = std::sync::mpsc::channel::<GenerationResponse>();
-        let channels: Channels = self.channels.clone();
+        // Backpressure bounds token memory if highlighting a large response is
+        // temporarily slower than Ollama's stream.
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<GenerationResponse>(64);
         let batch_tokens = self.batch_tokens;
         let fast_streaming = self.fast_streaming;
-        let response_string = Arc::clone(&self.response.response_as_string);
+        let response_string = Arc::new(Mutex::new(String::new()));
+        let response_string_for_renderer = Arc::clone(&response_string);
 
         std::thread::spawn(move || {
             fn render(
                 buffer: &str,
-                markdown_sender: crossbeam_channel::Sender<Vec<markdown::Item>>,
-                channels: Channels,
+                markdown_sender: &crossbeam_channel::Sender<Vec<markdown::Item>>,
+                markdown_receiver: &crossbeam_channel::Receiver<Vec<markdown::Item>>,
             ) {
                 let (_, visible) = split_thinking_text(buffer);
-                let md = markdown::parse(&visible).collect();
-
-                match markdown_sender.send(md) {
-                    Ok(_) => {}
-                    Err(e) => {
-                        eprintln!("Failed to send markdown response: {}", e);
-                        Channels::send_request_to_channel(
-                            Arc::clone(&channels.debug_channel),
-                            DebugMessage {
-                                message:
-                                    "Failed to create markdown response [markdown_sender.send failed]"
-                                        .to_string(),
-                                is_error: true,
-                            },
-                        );
-                    }
-                };
+                let md = parse_markdown_items(&visible);
+                while markdown_receiver.try_recv().is_ok() {}
+                // A disconnected receiver means the completed job has already
+                // been reconciled into its chat history.
+                let _ = markdown_sender.try_send(md);
             }
 
             let mut buffer = String::new();
             let mut last_render_time = Instant::now();
             let mut total_tokens = 0;
 
-            for token in rx {
+            while let Some(token) = rx.blocking_recv() {
                 buffer.push_str(&token.response);
 
-                if let Ok(mut current_response) = response_string.lock() {
+                if let Ok(mut current_response) = response_string_for_renderer.lock() {
                     *current_response = buffer.clone();
                 }
 
                 total_tokens += 1;
 
-                if !(fast_streaming
-                    || total_tokens >= batch_tokens
-                    || last_render_time.elapsed().as_millis() >= 250)
+                if fast_streaming {
+                    // "Fast" remains visually immediate without reparsing the
+                    // entire growing answer more than roughly once per frame.
+                    if last_render_time.elapsed().as_millis() < 33 {
+                        continue;
+                    }
+                } else if total_tokens < batch_tokens
+                    && last_render_time.elapsed().as_millis() < 250
                 {
                     continue;
                 }
@@ -836,15 +1033,15 @@ impl Program {
                 total_tokens = 0;
                 last_render_time = Instant::now();
 
-                render(&buffer, markdown_sender.clone(), channels.clone());
+                render(&buffer, &markdown_sender, &markdown_receiver_for_renderer);
             }
 
             if !buffer.is_empty() {
-                if let Ok(mut current_response) = response_string.lock() {
+                if let Ok(mut current_response) = response_string_for_renderer.lock() {
                     *current_response = buffer.clone();
                 }
 
-                render(&buffer, markdown_sender.clone(), channels.clone());
+                render(&buffer, &markdown_sender, &markdown_receiver_for_renderer);
             }
         });
 
@@ -858,19 +1055,14 @@ impl Program {
                     is_error: true,
                 },
             );
-            Channels::send_request_to_channel(Arc::clone(&self.channels.debounce_channel), false);
             return Task::none();
         }
 
         // Clone the attachment into the request/chat first. The composer owns its
         // copy until the submission has been accepted, avoiding a transient blank
         // preview while the async request is being prepared.
-        let attached_image = self.pending_image.clone();
-        self.active_response_had_image = attached_image.is_some();
-        if self.active_response_had_image {
-            self.last_vision_response.clear();
-            self.vision_markdown_cache.clear();
-        }
+        let attached_images = self.pending_images.clone();
+        let had_image = !attached_images.is_empty();
         let logging = self.app_state.logging;
         let filtering = self.app_state.filtering;
         let user_info = self.user_information.clone();
@@ -878,24 +1070,50 @@ impl Program {
         let web_search_enabled = self.web_search_for_chat;
         let mut web_search_settings = self.web_search_settings.clone();
         web_search_settings.enabled = web_search_enabled;
-        let web_search_state_sender = self.web_search_state_sender.clone();
+        let (web_search_state_sender, web_search_state_receiver) = crossbeam_channel::unbounded();
+        let chat_id = self.current_chat_id.clone();
+        let completion_chat_id = chat_id.clone();
+        let notice_chat_id = chat_id.clone();
+        let chat_notice_sender = self.chat_notice_sender.clone();
+        self.chat_notices.remove(&chat_id);
 
-        user_info
-            .chat_history
-            .lock()
-            .unwrap()
-            .push_message(Correspondence::User {
+        let response_start_index = {
+            let mut chat = user_info.chat_history.lock().unwrap();
+            chat.push_message(Correspondence::User {
                 text: prompt.clone(),
-                image: attached_image.clone(),
+                images: attached_images.clone(),
             });
+            chat.messages.len()
+        };
 
         self.refresh_chat_markdown_cache();
-        self.pending_image = None;
+        self.pending_images.clear();
+        user_info.chat_history.lock().unwrap().bot_responding = true;
+        if self.temporary_chat {
+            self.temporary_chats.remove(&chat_id);
+        }
+        self.active_prompts.insert(
+            chat_id,
+            ActivePrompt {
+                chat_history: Arc::clone(&user_info.chat_history),
+                response_as_string: response_string,
+                parsed_markdown: parse_markdown_items("Waiting for bot..."),
+                markdown_receiver,
+                web_search_state: WebSearchState::Idle,
+                web_search_state_receiver,
+                cancel: Arc::clone(&cancel),
+                model_name,
+                started_at,
+                response_start_index,
+                had_image,
+                web_search_enabled,
+                temporary: self.temporary_chat,
+            },
+        );
 
         Task::perform(
             async move {
                 println!("Received prompt: {}", prompt.clone());
-                user_info.chat_history.lock().unwrap().bot_responding = true;
 
                 let system_prompt: String = system_prompt.unwrap();
                 let ip = user_info.ip_address.clone();
@@ -921,8 +1139,9 @@ impl Program {
                             let _ = web_search_state_sender.send(WebSearchState::Failed {
                                 message: error.user_message().to_string(),
                             });
-                            Channels::send_request_to_channel(
-                                Arc::clone(&channels.debug_channel),
+                            send_chat_notice(
+                                &chat_notice_sender,
+                                &notice_chat_id,
                                 DebugMessage {
                                     message: error.user_message().to_string(),
                                     is_error: true,
@@ -938,10 +1157,6 @@ impl Program {
                                 },
                             );
                             user_info.chat_history.lock().unwrap().bot_responding = false;
-                            Channels::send_request_to_channel(
-                                Arc::clone(&channels.debounce_channel),
-                                false,
-                            );
                             return;
                         }
                     };
@@ -953,6 +1168,11 @@ impl Program {
                         temperature: user_info.temperature / 10.0,
                         context_tokens: user_info.context_tokens,
                         max_response_tokens: user_info.max_response_tokens,
+                        images: attached_images
+                            .iter()
+                            .map(|image| BASE64.encode(&image.bytes))
+                            .collect(),
+                        thinking: user_info.thinking_level.api_value(),
                         settings: web_search_settings.clone(),
                         provider,
                         state_sender: web_search_state_sender.clone(),
@@ -967,21 +1187,23 @@ impl Program {
                             } else {
                                 result.answer
                             };
-                            let _ = tx.send(GenerationResponse {
-                                model: user_info.model.clone().unwrap(),
-                                created_at: Local::now().to_rfc3339(),
-                                response: answer.clone(),
-                                done: true,
-                                context: None,
-                                total_duration: None,
-                                load_duration: None,
-                                prompt_eval_count: None,
-                                prompt_eval_duration: None,
-                                eval_count: None,
-                                eval_duration: None,
-                                thinking: None,
-                                logprobs: None,
-                            });
+                            let _ = tx
+                                .send(GenerationResponse {
+                                    model: user_info.model.clone().unwrap(),
+                                    created_at: Local::now().to_rfc3339(),
+                                    response: answer.clone(),
+                                    done: true,
+                                    context: None,
+                                    total_duration: None,
+                                    load_duration: None,
+                                    prompt_eval_count: None,
+                                    prompt_eval_duration: None,
+                                    eval_count: None,
+                                    eval_duration: None,
+                                    thinking: None,
+                                    logprobs: None,
+                                })
+                                .await;
                             if logging {
                                 Channels::send_request_to_channel(
                                     Arc::clone(&channels.logging_channel),
@@ -1011,6 +1233,7 @@ impl Program {
                                 },
                             );
                         }
+                        Err(crate::web_search::WebSearchError::Cancelled) => {}
                         Err(error) => {
                             let message = error.user_message().to_string();
                             eprintln!(
@@ -1020,31 +1243,26 @@ impl Program {
                             let _ = web_search_state_sender.send(WebSearchState::Failed {
                                 message: message.clone(),
                             });
-                            Channels::send_request_to_channel(
-                                Arc::clone(&channels.debug_channel),
+                            send_chat_notice(
+                                &chat_notice_sender,
+                                &notice_chat_id,
                                 DebugMessage {
                                     message: message.clone(),
                                     is_error: true,
                                 },
                             );
-                            if !matches!(error, crate::web_search::WebSearchError::Cancelled) {
-                                user_info.chat_history.lock().unwrap().push_message(
-                                    Correspondence::Bot {
-                                        text: format!("Web search failed: {message}"),
-                                        model: user_info.model.clone(),
-                                        thinking_seconds: None,
-                                        sources: Vec::new(),
-                                        web_search_used: true,
-                                    },
-                                );
-                            }
+                            user_info.chat_history.lock().unwrap().push_message(
+                                Correspondence::Bot {
+                                    text: format!("Web search failed: {message}"),
+                                    model: user_info.model.clone(),
+                                    thinking_seconds: None,
+                                    sources: Vec::new(),
+                                    web_search_used: true,
+                                },
+                            );
                         }
                     }
                     user_info.chat_history.lock().unwrap().bot_responding = false;
-                    Channels::send_request_to_channel(
-                        Arc::clone(&channels.debounce_channel),
-                        false,
-                    );
                     return;
                 }
 
@@ -1064,16 +1282,19 @@ impl Program {
                     Ok(body) => body,
                     Err(e) => {
                         eprintln!("Error serializing request: {}", e);
-                        Channels::send_request_to_channel(
-                            Arc::clone(&channels.debug_channel),
+                        let message = "Could not prepare the Ollama request".to_string();
+                        send_chat_notice(
+                            &chat_notice_sender,
+                            &notice_chat_id,
                             DebugMessage {
-                                message: "Could not prepare the Ollama request".to_string(),
+                                message: message.clone(),
                                 is_error: true,
                             },
                         );
-                        Channels::send_request_to_channel(
-                            Arc::clone(&channels.debounce_channel),
-                            false,
+                        append_failed_response(
+                            &user_info.chat_history,
+                            user_info.model.clone(),
+                            message,
                         );
                         user_info.chat_history.lock().unwrap().bot_responding = false;
                         return;
@@ -1082,48 +1303,68 @@ impl Program {
 
                 request_body["stream"] = serde_json::Value::Bool(true);
                 request_body["think"] = user_info.thinking_level.api_value();
-                if let Some(image) = attached_image {
-                    request_body["images"] = serde_json::json!([BASE64.encode(image.bytes)]);
+                if !attached_images.is_empty() {
+                    request_body["images"] = serde_json::json!(
+                        attached_images
+                            .iter()
+                            .map(|image| BASE64.encode(&image.bytes))
+                            .collect::<Vec<_>>()
+                    );
                 }
 
                 let url = format!("http://{}:{}/api/generate", ip.ip, ip.port);
-                let mut response = match reqwest::Client::new()
-                    .post(url)
-                    .json(&request_body)
-                    .send()
-                    .await
-                {
+                let request = reqwest::Client::new().post(url).json(&request_body).send();
+                let response = tokio::select! {
+                    response = request => Some(response),
+                    () = wait_until_cancelled(&cancel) => None,
+                };
+                let Some(response) = response else {
+                    user_info.chat_history.lock().unwrap().bot_responding = false;
+                    return;
+                };
+                let mut response = match response {
                     Ok(response) if response.status().is_success() => response,
                     Ok(response) => {
                         let status = response.status();
-                        let detail = response.text().await.unwrap_or_default();
-                        Channels::send_request_to_channel(
-                            Arc::clone(&channels.debug_channel),
+                        let response_text = response.text();
+                        let detail = tokio::select! {
+                            detail = response_text => detail.unwrap_or_default(),
+                            () = wait_until_cancelled(&cancel) => {
+                                user_info.chat_history.lock().unwrap().bot_responding = false;
+                                return;
+                            }
+                        };
+                        let message = format!("Ollama rejected the request ({status}): {detail}");
+                        send_chat_notice(
+                            &chat_notice_sender,
+                            &notice_chat_id,
                             DebugMessage {
-                                message: format!(
-                                    "Ollama rejected the request ({status}): {detail}"
-                                ),
+                                message: message.clone(),
                                 is_error: true,
                             },
                         );
-                        Channels::send_request_to_channel(
-                            Arc::clone(&channels.debounce_channel),
-                            false,
+                        append_failed_response(
+                            &user_info.chat_history,
+                            user_info.model.clone(),
+                            message,
                         );
                         user_info.chat_history.lock().unwrap().bot_responding = false;
                         return;
                     }
                     Err(error) => {
-                        Channels::send_request_to_channel(
-                            Arc::clone(&channels.debug_channel),
+                        let message = format!("Could not reach Ollama: {error}");
+                        send_chat_notice(
+                            &chat_notice_sender,
+                            &notice_chat_id,
                             DebugMessage {
-                                message: format!("Could not reach Ollama: {error}"),
+                                message: message.clone(),
                                 is_error: true,
                             },
                         );
-                        Channels::send_request_to_channel(
-                            Arc::clone(&channels.debounce_channel),
-                            false,
+                        append_failed_response(
+                            &user_info.chat_history,
+                            user_info.model.clone(),
+                            message,
                         );
                         user_info.chat_history.lock().unwrap().bot_responding = false;
                         return;
@@ -1133,7 +1374,7 @@ impl Program {
                 let mut final_response: Vec<String> = vec![];
                 let mut stream_buffer = String::new();
 
-                while !cancel.load(Ordering::Relaxed) {
+                'response_stream: while !cancel.load(Ordering::Relaxed) {
                     let chunk_result = tokio::select! {
                         chunk = response.chunk() => chunk,
                         _ = tokio::time::sleep(Duration::from_millis(50)) => continue,
@@ -1155,8 +1396,9 @@ impl Program {
                                         || token.eval_count.unwrap_or_default()
                                             >= user_info.max_response_tokens as u64)
                                 {
-                                    Channels::send_request_to_channel(
-                                        Arc::clone(&channels.debug_channel),
+                                    send_chat_notice(
+                                        &chat_notice_sender,
+                                        &notice_chat_id,
                                         DebugMessage {
                                             message: format!(
                                                 "The model reached the generation limit ({} tokens). Increase Maximum response or Context window in Settings.",
@@ -1184,14 +1426,21 @@ impl Program {
 
                                 // Filtering must see the complete response: Ollama can
                                 // split a profane word across arbitrary stream tokens.
-                                if !filtering && tx.send(token).is_err() {
-                                    break;
+                                if !filtering {
+                                    let sent = tokio::select! {
+                                        result = tx.send(token) => result.is_ok(),
+                                        () = wait_until_cancelled(&cancel) => false,
+                                    };
+                                    if !sent {
+                                        break 'response_stream;
+                                    }
                                 }
                             }
                             Err(e) => {
                                 eprintln!("Error decoding Ollama response: {}", e);
-                                Channels::send_request_to_channel(
-                                    Arc::clone(&channels.debug_channel),
+                                send_chat_notice(
+                                    &chat_notice_sender,
+                                    &notice_chat_id,
                                     DebugMessage {
                                         message: "Ollama returned an invalid streaming response"
                                             .to_string(),
@@ -1216,8 +1465,9 @@ impl Program {
                                     || token.eval_count.unwrap_or_default()
                                         >= user_info.max_response_tokens as u64)
                             {
-                                Channels::send_request_to_channel(
-                                    Arc::clone(&channels.debug_channel),
+                                send_chat_notice(
+                                    &chat_notice_sender,
+                                    &notice_chat_id,
                                     DebugMessage {
                                         message: format!(
                                             "The model reached the generation limit ({} tokens). Increase Maximum response or Context window in Settings.",
@@ -1235,13 +1485,14 @@ impl Program {
                             }
                             final_response.push(token.response.clone());
                             if !filtering {
-                                let _ = tx.send(token);
+                                let _ = tx.send(token).await;
                             }
                         }
                         Err(error) => {
                             eprintln!("Error decoding final Ollama response: {error}");
-                            Channels::send_request_to_channel(
-                                Arc::clone(&channels.debug_channel),
+                            send_chat_notice(
+                                &chat_notice_sender,
+                                &notice_chat_id,
                                 DebugMessage {
                                     message: "Ollama returned an invalid final streaming response"
                                         .to_string(),
@@ -1252,24 +1503,46 @@ impl Program {
                     }
                 }
 
+                if !was_cancelled && final_response.concat().trim().is_empty() {
+                    let message =
+                        "Ollama ended the response without returning content.".to_string();
+                    send_chat_notice(
+                        &chat_notice_sender,
+                        &notice_chat_id,
+                        DebugMessage {
+                            message: message.clone(),
+                            is_error: true,
+                        },
+                    );
+                    append_failed_response(
+                        &user_info.chat_history,
+                        user_info.model.clone(),
+                        message,
+                    );
+                    user_info.chat_history.lock().unwrap().bot_responding = false;
+                    return;
+                }
+
                 if filtering && !final_response.is_empty() {
                     let filtered = censor_text(&final_response.join(""));
                     final_response = vec![filtered.clone()];
-                    let _ = tx.send(GenerationResponse {
-                        model: user_info.model.clone().unwrap_or_default(),
-                        created_at: Local::now().to_rfc3339(),
-                        response: filtered,
-                        done: true,
-                        context: None,
-                        total_duration: None,
-                        load_duration: None,
-                        prompt_eval_count: None,
-                        prompt_eval_duration: None,
-                        eval_count: None,
-                        eval_duration: None,
-                        thinking: None,
-                        logprobs: None,
-                    });
+                    let _ = tx
+                        .send(GenerationResponse {
+                            model: user_info.model.clone().unwrap_or_default(),
+                            created_at: Local::now().to_rfc3339(),
+                            response: filtered,
+                            done: true,
+                            context: None,
+                            total_duration: None,
+                            load_duration: None,
+                            prompt_eval_count: None,
+                            prompt_eval_duration: None,
+                            eval_count: None,
+                            eval_duration: None,
+                            thinking: None,
+                            logprobs: None,
+                        })
+                        .await;
                 }
 
                 if logging && !was_cancelled {
@@ -1314,10 +1587,8 @@ impl Program {
                 }
 
                 user_info.chat_history.lock().unwrap().bot_responding = false;
-
-                Channels::send_request_to_channel(Arc::clone(&channels.debounce_channel), false);
             },
-            Message::AsyncResult,
+            move |_| Message::PromptFinished(completion_chat_id.clone()),
         )
     }
 
@@ -1328,6 +1599,11 @@ impl Program {
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::AsyncResult(_result) => Task::none(),
+
+            Message::PromptFinished(chat_id) => {
+                self.finish_prompt(&chat_id);
+                Task::none()
+            }
 
             Message::None => Task::none(),
 
@@ -1342,13 +1618,16 @@ impl Program {
 
             Message::PickImage => Task::perform(
                 async {
-                    let path = rfd::FileDialog::new()
+                    let paths = rfd::FileDialog::new()
                         .add_filter("Images", &["png", "jpg", "jpeg", "webp", "gif"])
-                        .pick_file()
+                        .pick_files()
                         .ok_or_else(|| "No image selected.".to_string())?;
-                    load_chat_image(&path)
+                    paths
+                        .iter()
+                        .map(|path| load_chat_image(path))
+                        .collect::<Result<Vec<_>, _>>()
                 },
-                Message::ImageLoaded,
+                Message::ImagesLoaded,
             ),
 
             Message::DropImage(path) => {
@@ -1363,7 +1642,7 @@ impl Program {
                 match result {
                     Ok(image) => {
                         let name = image.name.clone();
-                        self.pending_image = Some(image);
+                        self.pending_images.push(image);
                         self.set_debug_message(DebugMessage {
                             message: format!("Attached {name}."),
                             is_error: false,
@@ -1380,8 +1659,31 @@ impl Program {
                 Task::none()
             }
 
-            Message::RemoveImage => {
-                self.pending_image = None;
+            Message::ImagesLoaded(result) => {
+                match result {
+                    Ok(images) => {
+                        let count = images.len();
+                        self.pending_images.extend(images);
+                        self.set_debug_message(DebugMessage {
+                            message: format!("Attached {count} images."),
+                            is_error: false,
+                        });
+                    }
+                    Err(error) if error != "No image selected." => {
+                        self.set_debug_message(DebugMessage {
+                            message: error,
+                            is_error: true,
+                        })
+                    }
+                    Err(_) => {}
+                }
+                Task::none()
+            }
+
+            Message::RemoveImage(index) => {
+                if index < self.pending_images.len() {
+                    self.pending_images.remove(index);
+                }
                 Task::none()
             }
 
@@ -1481,13 +1783,32 @@ impl Program {
 
             Message::ToggleWebSearch => {
                 self.web_search_settings.enabled = !self.web_search_settings.enabled;
-                self.web_search_for_chat = self.web_search_settings.enabled;
+                if !self.current_chat_is_processing() {
+                    self.web_search_for_chat = self.web_search_settings.enabled;
+                    self.persist_current_chat_web_search_setting();
+                }
+                self.persist_web_search_settings();
+                Task::none()
+            }
+
+            Message::ToggleMultipleWebSearches => {
+                self.web_search_settings.allow_multiple_searches =
+                    !self.web_search_settings.allow_multiple_searches;
                 self.persist_web_search_settings();
                 Task::none()
             }
 
             Message::ToggleChatWebSearch => {
+                if self.current_chat_is_processing() {
+                    self.set_debug_message(DebugMessage {
+                        message: "Web search cannot be changed while this chat is working."
+                            .to_string(),
+                        is_error: false,
+                    });
+                    return Task::none();
+                }
                 self.web_search_for_chat = !self.web_search_for_chat;
+                self.persist_current_chat_web_search_setting();
                 Task::none()
             }
 
@@ -1541,7 +1862,6 @@ impl Program {
             }
 
             Message::NewChat => {
-                self.cancel_response_for_chat_navigation();
                 self.save_open_chat();
                 self.current_chat_id = Self::new_chat_id();
                 self.temporary_chat = false;
@@ -1551,14 +1871,43 @@ impl Program {
             }
 
             Message::OpenChat(id) => {
-                self.cancel_response_for_chat_navigation();
                 self.save_open_chat();
-                if let Some(saved) = self.saved_chats.iter().find(|chat| chat.id == id).cloned() {
-                    self.current_chat_id = saved.id.clone();
-                    self.temporary_chat = false;
-                    self.web_search_for_chat = self.web_search_settings.enabled;
-                    self.user_information.chat_history = Arc::new(Mutex::new(saved.to_current()));
-                    self.response.parsed_markdown.clear();
+                let running_history = self
+                    .active_prompts
+                    .get(&id)
+                    .map(|job| Arc::clone(&job.chat_history));
+                let running_settings = self
+                    .active_prompts
+                    .get(&id)
+                    .map(|job| (job.temporary, job.web_search_enabled));
+                let temporary_history = self
+                    .temporary_chats
+                    .get(&id)
+                    .map(|chat| Arc::clone(&chat.chat_history));
+                let temporary_settings = self
+                    .temporary_chats
+                    .get(&id)
+                    .map(|chat| (true, chat.web_search_enabled));
+                let chat_settings = running_settings.or(temporary_settings);
+                let saved = self.saved_chats.iter().find(|chat| chat.id == id).cloned();
+                let saved_web_search_enabled =
+                    saved.as_ref().and_then(|chat| chat.web_search_enabled);
+                if let Some(chat_history) = running_history
+                    .or(temporary_history)
+                    .or_else(|| saved.map(|chat| Arc::new(Mutex::new(chat.to_current()))))
+                {
+                    self.current_chat_id = id;
+                    if let Some((_, shown_at)) = self.chat_notices.get_mut(&self.current_chat_id) {
+                        *shown_at = Instant::now();
+                    }
+                    self.temporary_chat = chat_settings
+                        .map(|(temporary, _)| temporary)
+                        .unwrap_or(false);
+                    self.web_search_for_chat = chat_settings
+                        .map(|(_, web_search_enabled)| web_search_enabled)
+                        .or(saved_web_search_enabled)
+                        .unwrap_or(self.web_search_settings.enabled);
+                    self.user_information.chat_history = chat_history;
                     // Rendering caches are positional and belong only to the
                     // previously open chat.
                     self.chat_markdown_cache.clear();
@@ -1566,19 +1915,22 @@ impl Program {
                     self.expanded_thinking.clear();
                     self.last_copied_text = None;
                     self.last_copied_at = None;
-                    if let Ok(mut text) = self.response.response_as_string.lock() {
-                        text.clear();
-                    }
                     self.refresh_chat_markdown_cache();
                 }
                 Task::none()
             }
 
             Message::DeleteChat(id) => {
-                if self.is_processing {
+                if self.active_prompts.contains_key(&id) {
+                    self.set_debug_message(DebugMessage {
+                        message: "Stop that chat's response before deleting it.".to_string(),
+                        is_error: true,
+                    });
                     return Task::none();
                 }
                 self.saved_chats.retain(|chat| chat.id != id);
+                self.chat_notices.remove(&id);
+                self.vision_responses.remove(&id);
                 if self.current_chat_id == id {
                     self.current_chat_id = Self::new_chat_id();
                     self.clear_open_chat();
@@ -1587,10 +1939,20 @@ impl Program {
                 Task::none()
             }
 
-            Message::ToggleChatPin(id) => {
-                if self.is_processing {
-                    return Task::none();
+            Message::DeleteTemporaryChat(id) => {
+                self.temporary_chats.remove(&id);
+                self.chat_notices.remove(&id);
+                self.vision_responses.remove(&id);
+                if self.current_chat_id == id {
+                    self.current_chat_id = Self::new_chat_id();
+                    self.temporary_chat = false;
+                    self.web_search_for_chat = self.web_search_settings.enabled;
+                    self.clear_open_chat();
                 }
+                Task::none()
+            }
+
+            Message::ToggleChatPin(id) => {
                 if let Some(chat) = self.saved_chats.iter_mut().find(|chat| chat.id == id) {
                     chat.pinned = !chat.pinned;
                     // Stable sorting changes only the toggled chat's section and
@@ -1602,8 +1964,12 @@ impl Program {
             }
 
             Message::ToggleTemporaryChat => {
-                self.cancel_response_for_chat_navigation();
                 if self.temporary_chat {
+                    if !self.active_prompts.contains_key(&self.current_chat_id) {
+                        self.temporary_chats.remove(&self.current_chat_id);
+                        self.chat_notices.remove(&self.current_chat_id);
+                        self.vision_responses.remove(&self.current_chat_id);
+                    }
                     self.temporary_chat = false;
                     self.current_chat_id = Self::new_chat_id();
                     self.web_search_for_chat = self.web_search_settings.enabled;
@@ -1618,12 +1984,34 @@ impl Program {
                 Task::none()
             }
 
-            Message::ChooseChatFolder => Task::perform(
-                async { rfd::FileDialog::new().pick_folder() },
-                Message::ChatFolderSelected,
-            ),
+            Message::ChooseChatFolder => {
+                if !self.active_prompts.is_empty() {
+                    self.set_debug_message(DebugMessage {
+                        message: "Wait for running chats before changing the chat folder."
+                            .to_string(),
+                        is_error: false,
+                    });
+                    Task::none()
+                } else {
+                    Task::perform(
+                        async { rfd::FileDialog::new().pick_folder() },
+                        Message::ChatFolderSelected,
+                    )
+                }
+            }
 
             Message::ChatFolderSelected(Some(folder)) => {
+                // The folder picker is asynchronous, so a prompt may have
+                // started after it opened. Keep the current storage location
+                // stable until every background chat has finished.
+                if !self.active_prompts.is_empty() {
+                    self.set_debug_message(DebugMessage {
+                        message: "Wait for running chats before changing the chat folder."
+                            .to_string(),
+                        is_error: false,
+                    });
+                    return Task::none();
+                }
                 self.save_open_chat();
                 let previous_directory = self.chat_storage_dir.clone();
                 let result = fs::create_dir_all(&folder)
@@ -1661,10 +2049,16 @@ impl Program {
             Message::Tick => {
                 self.clear_debug_message_if_old();
                 self.clear_copy_feedback_if_old();
-                while let Ok(state) = self.web_search_state_receiver.try_recv() {
-                    if !self.discard_cancelled_web_search_updates {
-                        self.web_search_state = state;
+                for job in self.active_prompts.values_mut() {
+                    while let Ok(state) = job.web_search_state_receiver.try_recv() {
+                        job.web_search_state = state;
                     }
+                    while let Ok(markdown) = job.markdown_receiver.try_recv() {
+                        job.parsed_markdown = markdown;
+                    }
+                }
+                while let Ok((chat_id, notice)) = self.chat_notice_receiver.try_recv() {
+                    self.chat_notices.insert(chat_id, (notice, Instant::now()));
                 }
 
                 if self.current_tick > MAX_TICK {
@@ -1755,48 +2149,6 @@ impl Program {
                     );
                 }
 
-                if let Ok(md) = self.channels.markdown_channel_reciever.try_recv() {
-                    self.response.parsed_markdown = md;
-                }
-
-                let debounce_result = {
-                    let guard = self.channels.debounce_channel.lock().unwrap();
-                    guard.1.try_recv()
-                };
-
-                if let Ok(is_processing) = debounce_result {
-                    self.is_processing = is_processing;
-
-                    if !is_processing {
-                        if self.discard_cancelled_web_search_updates {
-                            self.reset_web_search_state();
-                            self.discard_cancelled_web_search_updates = false;
-                        }
-                        self.finalize_response_metadata();
-                        self.refresh_chat_markdown_cache();
-                        if self.active_response_had_image {
-                            let completed = self
-                                .response
-                                .response_as_string
-                                .lock()
-                                .map(|response| response.clone())
-                                .unwrap_or_default();
-                            let (_, visible) = split_thinking_text(&completed);
-                            self.last_vision_response = visible;
-                            self.vision_markdown_cache =
-                                markdown::parse(&self.last_vision_response).collect();
-                        }
-                        self.active_response_had_image = false;
-                        if let Ok(mut response) = self.response.response_as_string.lock() {
-                            response.clear();
-                        }
-                        self.response.parsed_markdown.clear();
-                        self.expanded_thinking.remove(&usize::MAX);
-                        self.active_response_model_name = None;
-                        self.save_open_chat();
-                    }
-                }
-
                 let debug_result = {
                     let guard = self.channels.debug_channel.lock().unwrap();
                     guard.1.try_recv()
@@ -1879,6 +2231,7 @@ impl Program {
             Message::WipeChatHistory => {
                 // The saved conversation keeps its id and remains on disk. Further
                 // messages start a fresh chat, so clearing context cannot overwrite it.
+                self.save_open_chat();
                 self.current_chat_id = Self::new_chat_id();
                 self.clear_open_chat();
 
@@ -2113,18 +2466,16 @@ impl Program {
             Message::KeyReleased(_key) => Task::none(),
 
             Message::Prompt(prompt) => {
-                if !self.is_processing {
-                    self.discard_cancelled_web_search_updates = false;
-                    self.reset_web_search_state();
+                if !self.current_chat_is_processing() {
                     let mut prompt = prompt.trim().to_string();
-                    if prompt.is_empty() && self.pending_image.is_none() {
+                    if prompt.is_empty() && self.pending_images.is_empty() {
                         self.set_debug_message(DebugMessage {
                             message: "Enter a message or attach an image first.".to_string(),
                             is_error: true,
                         });
                         return Task::none();
                     }
-                    if self.pending_image.is_some()
+                    if !self.pending_images.is_empty()
                         && self.user_information.vision_supported == Some(false)
                     {
                         self.set_debug_message(DebugMessage {
@@ -2145,17 +2496,7 @@ impl Program {
                     if prompt.is_empty() {
                         prompt = "Describe this image in detail.".to_string();
                     }
-                    self.is_processing = true;
                     self.prompt.prompt = String::new();
-
-                    self.response.parsed_markdown = vec![];
-
-                    if let Ok(mut response_text) = self.response.response_as_string.lock() {
-                        *response_text = String::new();
-                    }
-
-                    self.response.parsed_markdown = markdown::parse("Waiting for bot...").collect();
-
                     return Self::prompt(self, prompt);
                 }
 
@@ -2163,13 +2504,19 @@ impl Program {
             }
 
             Message::StopResponse => {
-                if let Some(cancel) = &self.response_cancel {
-                    cancel.store(true, Ordering::Relaxed);
+                if let Some(job) = self.active_prompts.get(&self.current_chat_id) {
+                    job.cancel.store(true, Ordering::Relaxed);
                 }
-                self.set_debug_message(DebugMessage {
-                    message: "Stopping response…".to_string(),
-                    is_error: false,
-                });
+                self.chat_notices.insert(
+                    self.current_chat_id.clone(),
+                    (
+                        DebugMessage {
+                            message: "Stopping response…".to_string(),
+                            is_error: false,
+                        },
+                        Instant::now(),
+                    ),
+                );
                 Task::none()
             }
 
@@ -2360,6 +2707,10 @@ impl Default for Program {
             .as_ref()
             .map(|chat| chat.id.clone())
             .unwrap_or_else(Self::new_chat_id);
+        let web_search_for_chat = restored_chat
+            .as_ref()
+            .and_then(|chat| chat.web_search_enabled)
+            .unwrap_or(web_search_settings.enabled);
         let current_chat =
             restored_chat
                 .as_ref()
@@ -2396,7 +2747,7 @@ impl Default for Program {
             }
         };
 
-        let (web_search_state_sender, web_search_state_receiver) = crossbeam_channel::unbounded();
+        let (chat_notice_sender, chat_notice_receiver) = crossbeam_channel::unbounded();
         gui::set_dark_mode(dark_mode);
 
         Self {
@@ -2404,17 +2755,16 @@ impl Default for Program {
             fast_streaming,
             chat_menu_open: true,
             temporary_chat: false,
-            web_search_for_chat: web_search_settings.enabled,
+            web_search_for_chat,
             web_search_settings,
-            web_search_state: WebSearchState::Idle,
-            web_search_state_sender,
-            web_search_state_receiver,
-            discard_cancelled_web_search_updates: false,
             current_chat_id,
             saved_chats,
             chat_storage_dir,
-            is_processing: false,
-            response_cancel: None,
+            active_prompts: HashMap::new(),
+            temporary_chats: HashMap::new(),
+            chat_notices: HashMap::new(),
+            chat_notice_sender,
+            chat_notice_receiver,
             current_tick: 0,
             installing_model: String::new(),
 
@@ -2429,15 +2779,12 @@ impl Default for Program {
             },
             chat_markdown_cache: Vec::new(),
             chat_model_name_cache: Vec::new(),
-            active_response_model_name: None,
             last_copied_text: None,
             last_copied_at: None,
-            pending_image: None,
+            pending_images: Vec::new(),
             generated_images: load_generated_images(),
             is_generating_image: false,
-            active_response_had_image: false,
-            last_vision_response: String::new(),
-            vision_markdown_cache: Vec::new(),
+            vision_responses: HashMap::new(),
             expanded_thinking: HashSet::new(),
 
             system_prompt: SystemPrompt {
@@ -2446,9 +2793,7 @@ impl Default for Program {
                 system_prompt: selected_system_prompt,
             },
             channels: Channels {
-                markdown_channel_reciever: crossbeam_channel::unbounded().1,
                 debug_channel: Arc::new(Mutex::new(std::sync::mpsc::channel::<DebugMessage>())),
-                debounce_channel: Arc::new(Mutex::new(std::sync::mpsc::channel::<bool>())),
                 logging_channel: Arc::new(Mutex::new(std::sync::mpsc::channel::<Log>())),
             },
             user_information: UserInformation {
@@ -2469,12 +2814,7 @@ impl Default for Program {
                 },
                 language,
             },
-            response: Response {
-                response_as_string: Arc::new(Mutex::new(String::new())),
-                parsed_markdown: vec![],
-            },
             prompt: Prompt {
-                prompt_time_sent: Instant::now(),
                 prompt: String::new(),
             },
             app_state: AppState {
@@ -2522,6 +2862,7 @@ pub fn main() -> iced::Result {
 
     let window_settings = iced::window::Settings {
         icon,
+        min_size: Some(Size::new(900.0, 640.0)),
         ..iced::window::Settings::default()
     };
 
@@ -2534,17 +2875,47 @@ pub fn main() -> iced::Result {
                 Theme::Light
             }
         })
-        .window_size(Size::new(700.0, 785.0))
+        .window_size(Size::new(1100.0, 800.0))
         .window(window_settings)
         .run()
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+    use iced_widget::markdown;
+
     use super::{
+        ActivePrompt, Correspondence, CurrentChat, Message, Program, WebSearchState, app_data_dir,
         censor_text, decode_generation_line, disabled_web_tool_message, model_capabilities,
-        split_thinking_text,
+        normalize_code_fence_languages, parse_markdown_items, split_thinking_text,
     };
+
+    fn test_active_prompt(
+        chat_history: Arc<Mutex<CurrentChat>>,
+        cancel: Arc<AtomicBool>,
+    ) -> ActivePrompt {
+        let (_markdown_sender, markdown_receiver) = crossbeam_channel::unbounded();
+        let (_web_sender, web_search_state_receiver) = crossbeam_channel::unbounded();
+        ActivePrompt {
+            chat_history,
+            response_as_string: Arc::new(Mutex::new("Background answer".to_string())),
+            parsed_markdown: Vec::new(),
+            markdown_receiver,
+            web_search_state: WebSearchState::Idle,
+            web_search_state_receiver,
+            cancel,
+            model_name: "test-model".to_string(),
+            started_at: Instant::now(),
+            response_start_index: 1,
+            had_image: false,
+            web_search_enabled: true,
+            temporary: false,
+        }
+    }
 
     #[test]
     fn content_filter_replaces_entire_inappropriate_words_with_hashes() {
@@ -2608,5 +2979,201 @@ mod tests {
                 .is_some()
         );
         assert!(disabled_web_tool_message("A normal answer about web search.").is_none());
+    }
+
+    #[test]
+    fn failed_prompt_does_not_relabel_an_older_response() {
+        let mut chat = CurrentChat {
+            chats: Vec::new(),
+            messages: vec![Correspondence::Bot {
+                text: "Older answer".into(),
+                model: None,
+                thinking_seconds: None,
+                sources: Vec::new(),
+                web_search_used: false,
+            }],
+            bot_responding: false,
+        };
+
+        Program::apply_response_metadata(&mut chat, 1, "new-model", 9);
+
+        assert!(matches!(
+            &chat.messages[0],
+            Correspondence::Bot {
+                model: None,
+                thinking_seconds: None,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn response_metadata_only_updates_the_new_prompt_boundary() {
+        let mut chat = CurrentChat {
+            chats: Vec::new(),
+            messages: vec![
+                Correspondence::Bot {
+                    text: "Older answer".into(),
+                    model: None,
+                    thinking_seconds: None,
+                    sources: Vec::new(),
+                    web_search_used: false,
+                },
+                Correspondence::User {
+                    text: "New question".into(),
+                    images: Vec::new(),
+                },
+                Correspondence::Bot {
+                    text: "New answer".into(),
+                    model: None,
+                    thinking_seconds: None,
+                    sources: Vec::new(),
+                    web_search_used: false,
+                },
+            ],
+            bot_responding: false,
+        };
+
+        Program::apply_response_metadata(&mut chat, 2, "new-model", 9);
+
+        assert!(matches!(
+            &chat.messages[0],
+            Correspondence::Bot {
+                model: None,
+                thinking_seconds: None,
+                ..
+            }
+        ));
+        assert!(matches!(
+            &chat.messages[2],
+            Correspondence::Bot {
+                model: Some(model),
+                thinking_seconds: Some(9),
+                ..
+            } if model == "new-model"
+        ));
+    }
+
+    #[test]
+    fn navigating_away_keeps_prompt_running_and_finishes_its_original_chat() {
+        let test_app_data_dir = app_data_dir();
+        let _ = std::fs::remove_dir_all(&test_app_data_dir);
+        let mut program = Program::default();
+        program.active_prompts.clear();
+        program.saved_chats.clear();
+        program.temporary_chats.clear();
+        let test_storage_dir = std::env::temp_dir().join(format!(
+            "ollama-gui-background-test-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        program.chat_storage_dir.clone_from(&test_storage_dir);
+
+        let chat_a_id = "background-chat-a".to_string();
+        let chat_a = Arc::new(Mutex::new(CurrentChat {
+            chats: Vec::new(),
+            messages: vec![Correspondence::User {
+                text: "Background question".to_string(),
+                images: Vec::new(),
+            }],
+            bot_responding: true,
+        }));
+        let cancel = Arc::new(AtomicBool::new(false));
+
+        program.current_chat_id.clone_from(&chat_a_id);
+        program.user_information.chat_history = Arc::clone(&chat_a);
+        program.active_prompts.insert(
+            chat_a_id.clone(),
+            test_active_prompt(Arc::clone(&chat_a), Arc::clone(&cancel)),
+        );
+
+        let original_storage_dir = program.chat_storage_dir.clone();
+        drop(program.update(Message::ChatFolderSelected(Some(
+            original_storage_dir.join("should-not-be-used"),
+        ))));
+        assert_eq!(program.chat_storage_dir, original_storage_dir);
+
+        drop(program.update(Message::NewChat));
+        let foreground_chat_id = program.current_chat_id.clone();
+        assert_ne!(foreground_chat_id, chat_a_id);
+        assert!(!cancel.load(Ordering::Relaxed));
+        assert!(program.active_prompts.contains_key(&chat_a_id));
+
+        chat_a.lock().unwrap().push_message(Correspondence::Bot {
+            text: "Background answer".to_string(),
+            model: None,
+            thinking_seconds: None,
+            sources: Vec::new(),
+            web_search_used: true,
+        });
+        chat_a.lock().unwrap().bot_responding = false;
+
+        drop(program.update(Message::PromptFinished(chat_a_id.clone())));
+
+        assert!(!program.active_prompts.contains_key(&chat_a_id));
+        assert_eq!(program.current_chat_id, foreground_chat_id);
+        assert!(
+            program
+                .user_information
+                .chat_history
+                .lock()
+                .unwrap()
+                .messages
+                .is_empty()
+        );
+        let saved_chat = program
+            .saved_chats
+            .iter()
+            .find(|chat| chat.id == chat_a_id)
+            .expect("background chat should be updated in saved chats");
+        assert_eq!(saved_chat.messages.len(), 2);
+        assert_eq!(saved_chat.web_search_enabled, Some(true));
+        let reopened_chat = saved_chat.to_current();
+        assert!(matches!(
+            &reopened_chat.messages[1],
+            Correspondence::Bot {
+                text,
+                model: Some(model),
+                ..
+            } if text == "Background answer" && model == "test-model"
+        ));
+
+        drop(program.update(Message::OpenChat(chat_a_id.clone())));
+        assert!(program.web_search_for_chat);
+        drop(program.update(Message::ToggleChatWebSearch));
+        assert!(!program.web_search_for_chat);
+        assert_eq!(
+            program
+                .saved_chats
+                .iter()
+                .find(|chat| chat.id == chat_a_id)
+                .and_then(|chat| chat.web_search_enabled),
+            Some(false)
+        );
+
+        std::fs::remove_dir_all(test_storage_dir).unwrap();
+        std::fs::remove_dir_all(test_app_data_dir).unwrap();
+    }
+
+    #[test]
+    fn normalizes_common_code_fence_language_aliases_without_touching_code() {
+        let input = "```csharp\nlet marker = \"```csharp\";\n```\n~~~cplusplus\nint main() {}\n~~~";
+        let normalized = normalize_code_fence_languages(input);
+        assert_eq!(
+            normalized,
+            "```cs\nlet marker = \"```csharp\";\n```\n~~~cpp\nint main() {}\n~~~"
+        );
+
+        let items = parse_markdown_items("```csharp\nConsole.WriteLine(\"hi\");\n```");
+        assert!(matches!(
+            &items[0],
+            markdown::Item::CodeBlock {
+                language: Some(language),
+                ..
+            } if language == "cs"
+        ));
     }
 }

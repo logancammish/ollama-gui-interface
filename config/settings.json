@@ -12,6 +12,7 @@
         "enabled": false,
         "provider": "brave",
         "result_limit": 5,
+        "allow_multiple_searches": false,
         "request_timeout_seconds": 15
     }
 }

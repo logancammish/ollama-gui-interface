@@ -6,7 +6,6 @@ use std::{
 
 use crate::{GUIState, Program, web_search::WebSource};
 use chrono::Local;
-use iced_widget::markdown;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug)]
@@ -20,7 +19,7 @@ pub enum Correspondence {
     },
     User {
         text: String,
-        image: Option<ChatImage>,
+        images: Vec<ChatImage>,
     },
 }
 
@@ -49,10 +48,18 @@ pub struct SavedChat {
     pub sources: Vec<Vec<WebSource>>,
     #[serde(default)]
     pub web_search_used: Vec<bool>,
+    /// `None` lets chats saved before 0.5.2 inherit the global default.
+    #[serde(default)]
+    pub web_search_enabled: Option<bool>,
 }
 
 impl SavedChat {
-    pub fn from_current(id: String, title: String, chat: &CurrentChat) -> Self {
+    pub fn from_current(
+        id: String,
+        title: String,
+        chat: &CurrentChat,
+        web_search_enabled: bool,
+    ) -> Self {
         Self {
             id,
             title,
@@ -106,6 +113,7 @@ impl SavedChat {
                     )
                 })
                 .collect(),
+            web_search_enabled: Some(web_search_enabled),
         }
     }
 
@@ -119,7 +127,7 @@ impl SavedChat {
                 .map(|(index, message)| match message {
                     StoredMessage::User(text) => Correspondence::User {
                         text: text.clone(),
-                        image: None,
+                        images: Vec::new(),
                     },
                     StoredMessage::Bot(text) => Correspondence::Bot {
                         text: text.clone(),
@@ -155,6 +163,7 @@ mod saved_chat_tests {
         assert!(chat.thinking_seconds.is_empty());
         assert!(chat.sources.is_empty());
         assert!(chat.web_search_used.is_empty());
+        assert_eq!(chat.web_search_enabled, None);
     }
 
     #[test]
@@ -164,7 +173,7 @@ mod saved_chat_tests {
             messages: vec![
                 Correspondence::User {
                     text: "Question".into(),
-                    image: None,
+                    images: Vec::new(),
                 },
                 Correspondence::Bot {
                     text: "<think>Work</think>Answer".into(),
@@ -180,8 +189,9 @@ mod saved_chat_tests {
             bot_responding: false,
         };
 
-        let reopened =
-            SavedChat::from_current("chat-1".into(), "Question".into(), &current).to_current();
+        let saved = SavedChat::from_current("chat-1".into(), "Question".into(), &current, true);
+        assert_eq!(saved.web_search_enabled, Some(true));
+        let reopened = saved.to_current();
         assert!(matches!(
             &reopened.messages[1],
             Correspondence::Bot {
@@ -321,10 +331,6 @@ impl SystemPrompt {
                         is_error: true,
                     },
                 );
-                Channels::send_request_to_channel(
-                    Arc::clone(&program.channels.debounce_channel),
-                    false,
-                );
                 return None;
             }
         };
@@ -345,10 +351,6 @@ impl SystemPrompt {
                     message: "Could not get system prompt, is it selected?".to_string(),
                     is_error: true,
                 },
-            );
-            Channels::send_request_to_channel(
-                Arc::clone(&program.channels.debounce_channel),
-                false,
             );
             None
         }
@@ -429,26 +431,16 @@ impl fmt::Display for ThinkingLevel {
 }
 
 /// Channels
-/// These channels are either crossbeam or mpsc channels designed for easy communication
-/// between runtimes.
-/// markdown_channel_reciever: Crossbeam channel reciever for markdown content to the GUI
+/// These mpsc channels provide communication between runtimes.
 /// debug_channel: mpsc channel for sending debug information to GUI
-/// debounce_channel: mpsc channel for preventing certain things from occuring at the same time
 /// logging_channel: mpsc channel for communication with the logging feature of the program
 
 #[derive(Clone)]
 pub struct Channels {
-    pub markdown_channel_reciever: crossbeam_channel::Receiver<Vec<markdown::Item>>,
     pub debug_channel: Arc<
         Mutex<(
             std::sync::mpsc::Sender<DebugMessage>,
             std::sync::mpsc::Receiver<DebugMessage>,
-        )>,
-    >,
-    pub debounce_channel: Arc<
-        Mutex<(
-            std::sync::mpsc::Sender<bool>,
-            std::sync::mpsc::Receiver<bool>,
         )>,
     >,
     pub logging_channel: Arc<Mutex<(std::sync::mpsc::Sender<Log>, std::sync::mpsc::Receiver<Log>)>>,
@@ -471,14 +463,7 @@ impl Channels {
         }
     }
 }
-// Response saves the current response as both parsed markdown and a string
-pub struct Response {
-    pub response_as_string: Arc<Mutex<String>>,
-    pub parsed_markdown: Vec<markdown::Item>,
-}
-
-// Prompt saves the current prompt and time sent
+// Prompt stores the current composer text.
 pub struct Prompt {
-    pub prompt_time_sent: std::time::Instant,
     pub prompt: String,
 }
