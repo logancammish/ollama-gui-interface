@@ -948,7 +948,10 @@ async fn load_markdown_image(url: String) -> Result<iced::widget::image::Handle,
             .map_err(|error| format!("Could not prepare image request: {error}"))?;
         let response = client
             .get(parsed)
-            .header(reqwest::header::USER_AGENT, "ollama-gui/0.5 image-preview")
+            .header(
+                reqwest::header::USER_AGENT,
+                concat!("ollama-gui/", env!("CARGO_PKG_VERSION"), " image-preview"),
+            )
             .send()
             .await
             .and_then(reqwest::Response::error_for_status)

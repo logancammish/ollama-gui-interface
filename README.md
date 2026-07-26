@@ -22,7 +22,7 @@ native Rust application.
 </div>
 
 > [!NOTE]
-> This README describes the current `main` branch (`0.5.2`). Packaged releases
+> This README describes the current `main` branch (`0.6.0`). Packaged releases
 > may trail the source branch; check the release notes for the exact feature set
 > in a download.
 
@@ -43,7 +43,7 @@ It is a particularly good fit if you want to:
 - give tool-capable models optional, source-linked access to the web; or
 - tune generation and rendering without building your own Ollama client.
 
-## Highlights in 0.5
+## Highlights in 0.6
 
 ### A smarter chat workspace
 
@@ -135,7 +135,7 @@ ollama serve
 Open the [latest release](https://github.com/logancammish/ollama-gui-interface/releases/latest)
 and choose the asset for your operating system.
 
-- **Windows:** use `ollama-gui-win64-installer.exe` for the standard per-user
+- **Windows 11:** use `ollama-gui-0.6.0-windows-11-x64-setup.exe` for the standard per-user
   installation. It does not require administrator privileges.
 - **Linux:** download the Linux archive when one is provided, extract it, and
   run the `ollama-gui` executable.

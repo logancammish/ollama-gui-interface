@@ -1,15 +1,21 @@
+#define MyAppVersion "0.6.0"
+
 [Setup]
 AppName=ollama-gui
-AppVersion=0.5.2
+AppVersion={#MyAppVersion}
+VersionInfoVersion={#MyAppVersion}
 ; Install per-user so setup and the application never require elevation.
 DefaultDirName={localappdata}\Programs\ollama-gui
 DefaultGroupName=ollama-gui
 PrivilegesRequired=lowest
 UsedUserAreasWarning=no
+MinVersion=10.0.22000
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir=dist
-OutputBaseFilename=ollama-gui-win64-installer
+OutputBaseFilename=ollama-gui-{#MyAppVersion}-windows-11-x64-setup
+SetupIconFile=assets\icon.ico
+UninstallDisplayIcon={app}\ollama-gui.exe
 Compression=lzma
 SolidCompression=yes
 

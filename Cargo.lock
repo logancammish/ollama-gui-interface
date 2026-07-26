@@ -3194,7 +3194,7 @@ dependencies = [
 
 [[package]]
 name = "ollama-gui"
-version = "0.5.2"
+version = "0.6.0"
 dependencies = [
  "arboard",
  "async-trait",
