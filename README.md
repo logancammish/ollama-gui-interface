@@ -47,14 +47,23 @@ It is a particularly good fit if you want to:
 
 ### A smarter chat workspace
 
-- **Capability-aware reasoning** — supported models unlock Off, Low, Medium,
-  and High thinking levels. Reasoning is kept in a collapsible section so the
-  final answer stays readable.
+- **Capability-aware reasoning** — each model exposes only the modes it
+  reports, from simple Off/On controls through named effort levels such as
+  Minimal, Low, Medium, High, Extra high, or Maximum. Reasoning stays in a
+  collapsible section so the final answer remains readable.
+- **Resizable workspace** — drag the chat-list divider or composer handle to
+  tune the layout; both sizes are restored from the local settings file.
 - **Polished streaming output** — responses render as Markdown, code blocks have
   one-click copy controls and syntax highlighting for Rust, Lua, C, C++, Python,
   C#, and many other common languages.
 - **Precise generation controls** — tune temperature, maximum response length
-  from 512 to 65,536 tokens, and context windows from 4,096 to 262,144 tokens.
+  from 512 to 1,048,576 tokens, and context windows from 4,096 to 4,194,304
+  tokens. Use either the slider or type an exact value.
+- **Dynamic system context** — optionally add the current local date, time, user
+  name, and custom instructions to the selected prompt immediately before each
+  request.
+- **Opt-in code checks** — check generated Python, Rust, C, C++, and C# snippets
+  for basic syntax or compilation errors with locally installed tools.
 - **A theme that fits your desk** — switch between the redesigned dark and light
   interfaces and adjust text size for comfortable reading.
 
@@ -93,10 +102,12 @@ Brave Search. The model can search, fetch relevant pages, and return clickable
 sources with its answer. Live status shows what it is searching and reading.
 
 Web access is off by default and can be set globally or toggled for the current
-chat. An opt-in setting lets the model make one distinct follow-up search when
-the first results are insufficient. Requests are guarded with limits on searches,
-pages, redirects, response size, and tool iterations. Private/local network
-targets and unsupported content types are blocked.
+chat. Opt-in deep follow-up research turns an initial search into 3–6 targeted
+queries, adds provider-level freshness filters for time-sensitive questions, and
+checks 2–6 relevant pages across independent sites before answering. The model
+adapts the depth to the topic and conflicting evidence. Requests remain guarded
+with limits on searches, pages, redirects, response size, and tool iterations.
+Private/local network targets and unsupported content types are blocked.
 
 ### More control, without more friction
 
@@ -159,13 +170,27 @@ Most controls live in **Settings**:
 | Response and context limits | Output cap and how much conversation the model can hold |
 | Temperature | Predictability versus variety |
 | System prompt | Active instruction/personality profile |
-| Web search | Provider, API key, results per search, and optional follow-up search |
+| Dynamic system prompt | Date, time, user name, and custom per-request instructions |
+| Web search | Provider, API key, results per search, and optional multi-source follow-up research |
 | Chat storage | The folder containing saved conversations |
 | Model conversation context | Whether earlier messages are included in the next request |
 | Interface | Language, theme, and text size |
 
 **Advanced settings** contains model installation, custom Ollama connection
-details, streaming/batching controls, and content filtering.
+details, streaming/batching controls, content filtering, and the local code
+checker.
+
+### Local code checking
+
+Code checking is disabled by default. Read the warning and explicitly enable it
+under **Settings → Advanced settings → Local code checking**. Supported fenced
+code blocks then show a **Check code** button. The app uses `python3 -m
+py_compile`, `rustc`, `cc`, `c++`, or `csc` in a temporary folder and reports
+the first errors without running the compiled program.
+
+Generated code is untrusted input. Compiler and interpreter checks can fail,
+consume resources, or have unintended effects, so enable this only when you
+consent and have reviewed the code.
 
 ### Custom system prompts
 
@@ -198,7 +223,8 @@ a model that supports Ollama tool calling.
 
 1. Open **Settings** and enable **Web Search**.
 2. Leave **Brave Search** selected and choose the result limit.
-3. Optionally enable **Allow a follow-up search**.
+3. Optionally enable **Deep follow-up research** for adaptive multi-query,
+   multi-source checking.
 4. Provide the API key using one of the methods below.
 5. Use the **Web** button beside the chat input whenever you want web tools
    enabled for that conversation.

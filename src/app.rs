@@ -316,6 +316,61 @@ pub struct SystemPrompt {
     pub system_prompt: Option<String>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default)]
+pub struct DynamicPromptSettings {
+    pub include_date: bool,
+    pub include_time: bool,
+    pub include_user_name: bool,
+    pub user_name: String,
+    pub custom_instructions: String,
+}
+
+impl Default for DynamicPromptSettings {
+    fn default() -> Self {
+        Self {
+            include_date: true,
+            include_time: true,
+            include_user_name: false,
+            user_name: String::new(),
+            custom_instructions: String::new(),
+        }
+    }
+}
+
+impl DynamicPromptSettings {
+    pub fn apply(&self, base_prompt: &str, now: chrono::DateTime<Local>) -> String {
+        let mut prompt = base_prompt.trim().to_string();
+        let mut dynamic = Vec::new();
+
+        if self.include_date {
+            dynamic.push(format!("Current date: {}", now.format("%Y-%m-%d")));
+        }
+        if self.include_time {
+            dynamic.push(format!(
+                "Current local time: {} {}",
+                now.format("%H:%M:%S"),
+                now.format("%:z")
+            ));
+        }
+        if self.include_user_name && !self.user_name.trim().is_empty() {
+            dynamic.push(format!("The user's name is {}.", self.user_name.trim()));
+        }
+        if !self.custom_instructions.trim().is_empty() {
+            dynamic.push(self.custom_instructions.trim().to_string());
+        }
+
+        if !dynamic.is_empty() {
+            if !prompt.is_empty() {
+                prompt.push_str("\n\n");
+            }
+            prompt.push_str("Dynamic context:\n");
+            prompt.push_str(&dynamic.join("\n"));
+        }
+        prompt
+    }
+}
+
 impl SystemPrompt {
     // gets the currently selected system prompt
     pub fn get_current(program: &Program) -> Option<String> {
@@ -368,7 +423,11 @@ pub struct HostLocation {
 pub struct UserInformation {
     pub model: Option<String>,
     pub thinking_level: ThinkingLevel,
-    /// `None` means Ollama did not provide capability metadata, so we assume support.
+    /// The exact controls accepted by the selected model. A regular thinking
+    /// model generally exposes Off/On, while effort-aware models expose their
+    /// reported named levels.
+    pub thinking_levels: Vec<ThinkingLevel>,
+    /// `None` means capability detection is still in flight or unavailable.
     pub thinking_supported: Option<bool>,
     pub vision_supported: Option<bool>,
     pub image_generation_supported: Option<bool>,
@@ -403,18 +462,51 @@ impl fmt::Display for Language {
 pub enum ThinkingLevel {
     #[default]
     Off,
+    On,
+    Minimal,
     Low,
     Medium,
     High,
+    XHigh,
+    Max,
 }
 
 impl ThinkingLevel {
+    pub const ORDERED: [Self; 8] = [
+        Self::Off,
+        Self::On,
+        Self::Minimal,
+        Self::Low,
+        Self::Medium,
+        Self::High,
+        Self::XHigh,
+        Self::Max,
+    ];
+
+    pub fn from_api_name(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "false" | "none" | "off" | "disabled" => Some(Self::Off),
+            "true" | "on" | "enabled" => Some(Self::On),
+            "minimal" | "min" => Some(Self::Minimal),
+            "low" => Some(Self::Low),
+            "medium" | "med" => Some(Self::Medium),
+            "high" => Some(Self::High),
+            "xhigh" | "extra_high" | "extra-high" => Some(Self::XHigh),
+            "max" | "maximum" => Some(Self::Max),
+            _ => None,
+        }
+    }
+
     pub fn api_value(self) -> serde_json::Value {
         match self {
             Self::Off => serde_json::Value::Bool(false),
+            Self::On => serde_json::Value::Bool(true),
+            Self::Minimal => serde_json::Value::String("minimal".into()),
             Self::Low => serde_json::Value::String("low".into()),
             Self::Medium => serde_json::Value::String("medium".into()),
             Self::High => serde_json::Value::String("high".into()),
+            Self::XHigh => serde_json::Value::String("xhigh".into()),
+            Self::Max => serde_json::Value::String("max".into()),
         }
     }
 }
@@ -423,9 +515,13 @@ impl fmt::Display for ThinkingLevel {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::Off => "Off",
+            Self::On => "On",
+            Self::Minimal => "Minimal",
             Self::Low => "Low",
             Self::Medium => "Medium",
             Self::High => "High",
+            Self::XHigh => "Extra high",
+            Self::Max => "Maximum",
         })
     }
 }
@@ -466,4 +562,33 @@ impl Channels {
 // Prompt stores the current composer text.
 pub struct Prompt {
     pub prompt: String,
+    pub editor: iced::widget::text_editor::Content,
+}
+
+#[cfg(test)]
+mod dynamic_prompt_tests {
+    use super::DynamicPromptSettings;
+    use chrono::{FixedOffset, Local, TimeZone};
+
+    #[test]
+    fn dynamic_prompt_includes_enabled_fields_only() {
+        let settings = DynamicPromptSettings {
+            include_date: true,
+            include_time: false,
+            include_user_name: true,
+            user_name: "Aroha".into(),
+            custom_instructions: "Prefer concise answers.".into(),
+        };
+        let now = FixedOffset::east_opt(12 * 3600)
+            .unwrap()
+            .with_ymd_and_hms(2026, 7, 26, 14, 30, 0)
+            .unwrap()
+            .with_timezone(&Local);
+        let prompt = settings.apply("You are helpful.", now);
+
+        assert!(prompt.contains("Current date: 2026-07-26"));
+        assert!(!prompt.contains("Current local time:"));
+        assert!(prompt.contains("The user's name is Aroha."));
+        assert!(prompt.contains("Prefer concise answers."));
+    }
 }

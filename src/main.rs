@@ -4,13 +4,14 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use chrono::Local;
-use iced::{Element, Size, Subscription, Task, Theme, clipboard, keyboard, time};
+use iced::{Element, Point, Size, Subscription, Task, Theme, clipboard, keyboard, mouse, time};
 use iced_widget::markdown;
 use ollama_rs::Ollama;
 use ollama_rs::generation::completion::GenerationResponse;
@@ -22,8 +23,9 @@ mod gui;
 mod web_search;
 
 use crate::app::{
-    AppState, Channels, ChatImage, Correspondence, CurrentChat, DebugMessage, History,
-    HostLocation, Language, Log, Prompt, SavedChat, SystemPrompt, ThinkingLevel, UserInformation,
+    AppState, Channels, ChatImage, Correspondence, CurrentChat, DebugMessage,
+    DynamicPromptSettings, History, HostLocation, Language, Log, Prompt, SavedChat, SystemPrompt,
+    ThinkingLevel, UserInformation,
 };
 use crate::web_search::{
     BraveSearchProvider, ToolLoopRequest, WebSearchProviderKind, WebSearchSettings, WebSearchState,
@@ -36,12 +38,25 @@ const VERSION_TICK: i32 = 2;
 const MAX_TICK: i32 = 59;
 const BOT_LIST_TICK: i32 = 3;
 const TICK_MS: u64 = 200;
-const DEFAULT_MAX_RESPONSE_TOKENS: u32 = 10_240;
-const DEFAULT_CONTEXT_TOKENS: u32 = 20_480;
+/// Live output and indeterminate progress need a frame-oriented cadence. Keeping
+/// this separate from housekeeping avoids making disk/network polling run at
+/// animation speed.
+const UI_FRAME_MS: u64 = 33;
+const MAX_MARKDOWN_IMAGE_BYTES: usize = 12 * 1024 * 1024;
+const MAX_MARKDOWN_IMAGE_PIXELS: u64 = 32_000_000;
+const SETTINGS_SAVE_DEBOUNCE_MS: u64 = 450;
+const DEFAULT_MAX_RESPONSE_TOKENS: u32 = 32_768;
+const DEFAULT_CONTEXT_TOKENS: u32 = 131_072;
 const MIN_RESPONSE_TOKENS: u32 = 512;
-const MAX_RESPONSE_TOKENS: u32 = 65_536;
+const MAX_RESPONSE_TOKENS: u32 = 1_048_576;
 const MIN_CONTEXT_TOKENS: u32 = 4_096;
-const MAX_CONTEXT_TOKENS: u32 = 262_144;
+const MAX_CONTEXT_TOKENS: u32 = 4_194_304;
+const DEFAULT_SIDEBAR_WIDTH: f32 = 278.0;
+const MIN_SIDEBAR_WIDTH: f32 = 210.0;
+const MAX_SIDEBAR_WIDTH: f32 = 460.0;
+const DEFAULT_COMPOSER_HEIGHT: f32 = 142.0;
+const MIN_COMPOSER_HEIGHT: f32 = 118.0;
+const MAX_COMPOSER_HEIGHT: f32 = 320.0;
 
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -52,6 +67,47 @@ pub enum GUIState {
     Settings,
     AdvancedSettings,
     Images,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UiResizeTarget {
+    Sidebar,
+    Composer,
+}
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(default)]
+struct UiLayoutSettings {
+    sidebar_width: f32,
+    composer_height: f32,
+}
+
+impl Default for UiLayoutSettings {
+    fn default() -> Self {
+        Self {
+            sidebar_width: DEFAULT_SIDEBAR_WIDTH,
+            composer_height: DEFAULT_COMPOSER_HEIGHT,
+        }
+    }
+}
+
+impl UiLayoutSettings {
+    fn normalized(mut self) -> Self {
+        self.sidebar_width = self
+            .sidebar_width
+            .clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
+        self.composer_height = self
+            .composer_height
+            .clamp(MIN_COMPOSER_HEIGHT, MAX_COMPOSER_HEIGHT);
+        self
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ModelCapabilities {
+    thinking_levels: Vec<ThinkingLevel>,
+    vision: bool,
+    image_generation: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -85,21 +141,32 @@ enum Message {
     PasteImage,
     ImageLoaded(Result<ChatImage, String>),
     ImagesLoaded(Result<Vec<ChatImage>, String>),
+    MarkdownImageLoaded {
+        url: String,
+        result: Result<iced::widget::image::Handle, String>,
+    },
     RemoveImage(usize),
     GenerateImage,
     ImageGenerated(Result<String, String>),
     CopyImage(String),
-    ModelCapabilitiesKnown(String, Option<(bool, bool, bool)>),
+    ModelCapabilitiesKnown(String, Option<ModelCapabilities>),
     ToggleSettings,
     SystemPromptChange(String),
     Prompt(String),
     StopResponse,
-    UpdatePrompt(String),
+    EditPrompt(iced::widget::text_editor::Action),
+    UseSuggestion(String),
     None,
     KeyPressed(keyboard::Key, keyboard::Modifiers),
     KeyReleased(keyboard::Key),
+    StartUiResize(UiResizeTarget),
+    UiResizeMoved(Point),
+    StopUiResize,
+    WindowResized(Size),
+    FrameTick,
     Tick,
     CopyPressed(String),
+    CopyLatestResponse,
     ToggleThinking(usize),
     UpdateTextSize(f32),
     InstallationPrompt,
@@ -108,7 +175,19 @@ enum Message {
     UpdateInstall(String),
     UpdateTemperature(f32),
     UpdateMaxResponseTokens(f32),
+    EditMaxResponseTokens(String),
+    ApplyMaxResponseTokens,
     UpdateContextTokens(f32),
+    EditContextTokens(String),
+    ApplyContextTokens,
+    ToggleCodeChecking,
+    CheckCode(String, String),
+    CodeChecked(Result<String, String>),
+    ToggleDynamicDate,
+    ToggleDynamicTime,
+    ToggleDynamicUserName,
+    DynamicUserNameChanged(String),
+    DynamicCustomInstructionsChanged(String),
     LanguageChange(Language),
     ToggleInfoPopup,
     ToggleChatHistory,
@@ -122,9 +201,10 @@ enum Message {
 
 struct ActivePrompt {
     chat_history: Arc<Mutex<CurrentChat>>,
-    response_as_string: Arc<Mutex<String>>,
+    response_text: String,
+    thinking_text: String,
     parsed_markdown: Vec<markdown::Item>,
-    markdown_receiver: crossbeam_channel::Receiver<Vec<markdown::Item>>,
+    render_receiver: crossbeam_channel::Receiver<LiveRender>,
     web_search_state: WebSearchState,
     web_search_state_receiver: crossbeam_channel::Receiver<WebSearchState>,
     cancel: Arc<AtomicBool>,
@@ -136,6 +216,12 @@ struct ActivePrompt {
     temporary: bool,
 }
 
+struct LiveRender {
+    text: String,
+    thinking: String,
+    markdown: Vec<markdown::Item>,
+}
+
 struct TemporaryChatSession {
     chat_history: Arc<Mutex<CurrentChat>>,
     web_search_enabled: bool,
@@ -143,6 +229,13 @@ struct TemporaryChatSession {
 
 struct VisionResponse {
     markdown: Vec<markdown::Item>,
+}
+
+#[derive(Clone)]
+enum MarkdownImageState {
+    Loading,
+    Ready(iced::widget::image::Handle),
+    Failed(String),
 }
 
 struct Program {
@@ -161,6 +254,13 @@ struct Program {
     /// This is needed because markdown::view borrows parsed markdown items.
     chat_markdown_cache: Vec<Vec<markdown::Item>>,
 
+    /// UI-owned snapshot of the open chat. Background workers write through the
+    /// shared history, but ordinary view rebuilds should not clone the complete
+    /// conversation on every keystroke or animation frame.
+    chat_messages_cache: Vec<Correspondence>,
+    chat_thinking_cache: Vec<String>,
+    chat_visible_text_cache: Vec<String>,
+
     /// One model label per chat message.
     /// User messages use None. Bot messages store the model that generated them.
     chat_model_name_cache: Vec<Option<String>>,
@@ -173,6 +273,7 @@ struct Program {
     generated_images: Vec<String>,
     is_generating_image: bool,
     vision_responses: HashMap<String, VisionResponse>,
+    markdown_images: HashMap<String, MarkdownImageState>,
 
     /// Message indexes whose reasoning disclosure is open. Reasoning is hidden by default.
     expanded_thinking: HashSet<usize>,
@@ -185,12 +286,29 @@ struct Program {
     batch_tokens: i32,
     fast_streaming: bool,
     chat_menu_open: bool,
+    /// Normalized sidebar reveal progress. This is animated instead of
+    /// switching between two hard-coded widths in a single frame.
+    sidebar_animation: f32,
+    /// A lightweight phase used by live activity affordances.
+    ui_motion: f32,
+    /// Drives a short, eased reveal when the user changes pages or chats.
+    page_reveal: f32,
+    ui_layout: UiLayoutSettings,
+    ui_resize_target: Option<UiResizeTarget>,
+    window_size: Size,
     temporary_chat: bool,
     web_search_settings: WebSearchSettings,
     web_search_for_chat: bool,
     current_chat_id: String,
+    open_chat_dirty: bool,
     saved_chats: Vec<SavedChat>,
     chat_storage_dir: PathBuf,
+    code_checking_enabled: bool,
+    dynamic_prompt_settings: DynamicPromptSettings,
+    max_response_tokens_input: String,
+    context_tokens_input: String,
+    pending_settings: serde_json::Map<String, serde_json::Value>,
+    settings_dirty_at: Option<Instant>,
 }
 
 fn default_chat_storage_dir() -> PathBuf {
@@ -262,14 +380,141 @@ fn load_generated_images() -> Vec<String> {
     images
 }
 
-fn model_capabilities(json: &serde_json::Value) -> Option<(bool, bool, bool)> {
+fn collect_reported_thinking_levels(value: &serde_json::Value, levels: &mut Vec<ThinkingLevel>) {
+    const LEVEL_KEYS: [&str; 6] = [
+        "thinking_levels",
+        "think_levels",
+        "reasoning_levels",
+        "supported_thinking_levels",
+        "supported_reasoning_levels",
+        "reasoning_efforts",
+    ];
+
+    match value {
+        serde_json::Value::Object(object) => {
+            for (key, child) in object {
+                if LEVEL_KEYS.contains(&key.to_ascii_lowercase().as_str()) {
+                    let reported = match child {
+                        serde_json::Value::Array(values) => values.as_slice(),
+                        _ => std::slice::from_ref(child),
+                    };
+                    for level in reported {
+                        if let Some(level) = level.as_str().and_then(ThinkingLevel::from_api_name)
+                            && !levels.contains(&level)
+                        {
+                            levels.push(level);
+                        }
+                    }
+                } else {
+                    collect_reported_thinking_levels(child, levels);
+                }
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for child in values {
+                collect_reported_thinking_levels(child, levels);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn sorted_thinking_levels(mut levels: Vec<ThinkingLevel>) -> Vec<ThinkingLevel> {
+    levels.sort_by_key(|level| {
+        ThinkingLevel::ORDERED
+            .iter()
+            .position(|candidate| candidate == level)
+            .unwrap_or(usize::MAX)
+    });
+    levels.dedup();
+    levels
+}
+
+fn model_capabilities(json: &serde_json::Value) -> Option<ModelCapabilities> {
     let capabilities = json.get("capabilities")?.as_array()?;
     let has = |name| {
         capabilities
             .iter()
             .any(|capability| capability.as_str() == Some(name))
     };
-    Some((has("thinking"), has("vision"), has("image")))
+    let thinking = has("thinking");
+    let mut thinking_levels = Vec::new();
+    if thinking {
+        collect_reported_thinking_levels(json, &mut thinking_levels);
+
+        let renderer = json
+            .get("renderer")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        let parser = json
+            .get("parser")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        let family = json
+            .pointer("/details/family")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        let harmony = [renderer, parser, family].iter().any(|value| {
+            value.to_ascii_lowercase().contains("harmony")
+                || value.to_ascii_lowercase().contains("gptoss")
+                || value.to_ascii_lowercase().contains("gpt-oss")
+        });
+
+        if thinking_levels.is_empty() && harmony {
+            thinking_levels.extend([
+                ThinkingLevel::Low,
+                ThinkingLevel::Medium,
+                ThinkingLevel::High,
+            ]);
+        }
+
+        let template = json
+            .get("template")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        if thinking_levels.is_empty() && template.contains("ThinkLevel") {
+            let template = template.to_ascii_lowercase();
+            for level in ThinkingLevel::ORDERED {
+                let api_name = match level {
+                    ThinkingLevel::Off => "off",
+                    ThinkingLevel::On => "on",
+                    ThinkingLevel::Minimal => "minimal",
+                    ThinkingLevel::Low => "low",
+                    ThinkingLevel::Medium => "medium",
+                    ThinkingLevel::High => "high",
+                    ThinkingLevel::XHigh => "xhigh",
+                    ThinkingLevel::Max => "max",
+                };
+                if template.contains(&format!("\"{api_name}\""))
+                    || template.contains(&format!("'{api_name}'"))
+                {
+                    thinking_levels.push(level);
+                }
+            }
+        }
+
+        if thinking_levels.is_empty() {
+            thinking_levels.extend([ThinkingLevel::Off, ThinkingLevel::On]);
+        }
+    } else {
+        thinking_levels.push(ThinkingLevel::Off);
+    }
+
+    Some(ModelCapabilities {
+        thinking_levels: sorted_thinking_levels(thinking_levels),
+        vision: has("vision"),
+        image_generation: has("image"),
+    })
+}
+
+fn generated_image_payload(body: &serde_json::Value) -> Option<&str> {
+    body.get("data")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|images| images.first())
+        .and_then(|image| image.get("b64_json"))
+        .and_then(serde_json::Value::as_str)
+        // Keep compatibility with early experimental Ollama builds.
+        .or_else(|| body.get("image").and_then(serde_json::Value::as_str))
 }
 
 async fn generate_image_via_ollama(
@@ -278,13 +523,12 @@ async fn generate_image_via_ollama(
     prompt: String,
 ) -> Result<String, String> {
     let response = reqwest::Client::new()
-        .post(format!("{host}/api/generate"))
+        .post(format!("{host}/v1/images/generations"))
         .json(&serde_json::json!({
             "model": model,
             "prompt": prompt,
-            "stream": false,
-            "width": 1024,
-            "height": 1024
+            "size": "1024x1024",
+            "response_format": "b64_json"
         }))
         .send()
         .await
@@ -313,12 +557,8 @@ async fn generate_image_via_ollama(
                 .find_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
         })
         .ok_or_else(|| "Ollama returned an invalid image response.".to_string())?;
-    let encoded = body
-        .get("image")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| {
-            "The selected model did not return an image. Choose a model with the `image` capability."
-                .to_string()
+    let encoded = generated_image_payload(&body).ok_or_else(|| {
+            "The selected model returned no image data. Update Ollama and choose a model with the `image` capability.".to_string()
         })?;
     let encoded = encoded.rsplit_once(',').map_or(encoded, |(_, data)| data);
     let bytes = BASE64
@@ -354,10 +594,135 @@ fn resource_path(relative: &str) -> PathBuf {
     PathBuf::from(relative)
 }
 
+/// Iced intentionally starts with a tiny, deterministic font database instead
+/// of scanning the operating system. Load the platform emoji/symbol fonts
+/// explicitly so both interface icons and emoji in model output have a real
+/// fallback instead of rendering as empty boxes.
+fn fallback_font_bytes() -> Vec<Vec<u8>> {
+    let candidates = [
+        resource_path("assets/NotoColorEmoji.ttf"),
+        resource_path("assets/NotoSansSymbols2-Regular.ttf"),
+        PathBuf::from(r"C:\Windows\Fonts\seguiemj.ttf"),
+        PathBuf::from(r"C:\Windows\Fonts\seguisym.ttf"),
+        PathBuf::from("/System/Library/Fonts/Apple Color Emoji.ttc"),
+        PathBuf::from("/System/Library/Fonts/Apple Symbols.ttf"),
+        PathBuf::from("/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf"),
+        PathBuf::from("/usr/share/fonts/truetype/noto/NotoSansSymbols2-Regular.ttf"),
+        PathBuf::from("/usr/share/fonts/noto/NotoColorEmoji.ttf"),
+        PathBuf::from("/usr/share/fonts/noto/NotoSansSymbols2-Regular.ttf"),
+        PathBuf::from("/usr/share/fonts/TTF/NotoColorEmoji.ttf"),
+        PathBuf::from("/usr/share/fonts/google-noto-emoji-fonts/NotoColorEmoji.ttf"),
+        PathBuf::from("/usr/local/share/fonts/NotoColorEmoji.ttf"),
+        PathBuf::from("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+    ];
+
+    candidates
+        .into_iter()
+        .filter_map(|path| fs::read(path).ok())
+        .collect()
+}
+
 fn load_settings_text() -> Option<String> {
     fs::read_to_string(user_settings_path())
         .ok()
         .or_else(|| fs::read_to_string(resource_path("config/settings.json")).ok())
+}
+
+fn canonical_code_language(language: &str) -> Option<&'static str> {
+    match language.trim().to_ascii_lowercase().as_str() {
+        "python" | "py" | "python3" => Some("Python"),
+        "rust" | "rs" => Some("Rust"),
+        "c" => Some("C"),
+        "cpp" | "c++" | "cxx" | "cplusplus" => Some("C++"),
+        "cs" | "c#" | "csharp" | "c-sharp" => Some("C#"),
+        _ => None,
+    }
+}
+
+fn check_code(language: String, code: String) -> Result<String, String> {
+    let Some(language) = canonical_code_language(&language) else {
+        return Err("Code checking supports Python, Rust, C, C++, and C#.".into());
+    };
+    let directory = std::env::temp_dir().join(format!(
+        "ollama-gui-code-check-{}-{}",
+        std::process::id(),
+        chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+    ));
+    fs::create_dir_all(&directory)
+        .map_err(|error| format!("Could not create a temporary check folder: {error}"))?;
+
+    let (file_name, mut command, arguments): (&str, Command, Vec<&str>) = match language {
+        "Python" => (
+            "snippet.py",
+            Command::new("python3"),
+            vec!["-m", "py_compile", "snippet.py"],
+        ),
+        "Rust" => (
+            "snippet.rs",
+            Command::new("rustc"),
+            vec![
+                "--crate-type",
+                "lib",
+                "--emit",
+                "metadata",
+                "snippet.rs",
+                "-o",
+                "snippet.rmeta",
+            ],
+        ),
+        "C" => (
+            "snippet.c",
+            Command::new("cc"),
+            vec!["-fsyntax-only", "snippet.c"],
+        ),
+        "C++" => (
+            "snippet.cpp",
+            Command::new("c++"),
+            vec!["-fsyntax-only", "snippet.cpp"],
+        ),
+        "C#" => (
+            "snippet.cs",
+            Command::new("csc"),
+            vec!["/nologo", "/target:library", "snippet.cs"],
+        ),
+        _ => unreachable!(),
+    };
+
+    let result = (|| {
+        fs::write(directory.join(file_name), code)
+            .map_err(|error| format!("Could not prepare the code check: {error}"))?;
+        let output = command
+            .args(arguments)
+            .current_dir(&directory)
+            .output()
+            .map_err(|error| {
+                format!(
+                    "{language} checker is unavailable. Install its compiler/interpreter and try again: {error}"
+                )
+            })?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let details = format!("{stdout}{stderr}")
+            .trim()
+            .chars()
+            .take(4_000)
+            .collect::<String>();
+        if output.status.success() {
+            Ok(if details.is_empty() {
+                format!("{language} check passed with no errors.")
+            } else {
+                format!("{language} check passed:\n{details}")
+            })
+        } else {
+            Err(format!(
+                "{language} check found errors{}{}",
+                if details.is_empty() { "." } else { ":\n" },
+                details
+            ))
+        }
+    })();
+    let _ = fs::remove_dir_all(&directory);
+    result
 }
 
 fn censor_text(input: &str) -> String {
@@ -495,6 +860,118 @@ fn disabled_web_tool_message(input: &str) -> Option<&'static str> {
     )
 }
 
+fn decoded_image_handle(bytes: &[u8]) -> Result<iced::widget::image::Handle, String> {
+    if bytes.len() > MAX_MARKDOWN_IMAGE_BYTES {
+        return Err("Image is larger than the 12 MB display limit.".to_string());
+    }
+
+    let decoded =
+        image::load_from_memory(bytes).map_err(|error| format!("Unsupported image: {error}"))?;
+    let rgba = decoded.into_rgba8();
+    let (width, height) = rgba.dimensions();
+    if u64::from(width) * u64::from(height) > MAX_MARKDOWN_IMAGE_PIXELS {
+        return Err("Image dimensions are too large to display safely.".to_string());
+    }
+
+    Ok(iced::widget::image::Handle::from_rgba(
+        width,
+        height,
+        rgba.into_raw(),
+    ))
+}
+
+fn remote_image_url_is_safe(url: &url::Url) -> bool {
+    if !matches!(url.scheme(), "http" | "https") || !url.username().is_empty() {
+        return false;
+    }
+
+    match url.host() {
+        Some(url::Host::Domain(domain)) => {
+            let domain = domain.trim_end_matches('.').to_ascii_lowercase();
+            domain != "localhost" && !domain.ends_with(".localhost")
+        }
+        Some(url::Host::Ipv4(address)) => {
+            !(address.is_private()
+                || address.is_loopback()
+                || address.is_link_local()
+                || address.is_unspecified()
+                || address.is_broadcast())
+        }
+        Some(url::Host::Ipv6(address)) => {
+            !(address.is_loopback()
+                || address.is_unspecified()
+                || address.is_unique_local()
+                || address.is_unicast_link_local()
+                || matches!(address.to_ipv4_mapped(), Some(v4) if
+                    v4.is_private() || v4.is_loopback() || v4.is_link_local() || v4.is_unspecified()))
+        }
+        None => false,
+    }
+}
+
+async fn load_markdown_image(url: String) -> Result<iced::widget::image::Handle, String> {
+    let bytes = if let Some(data) = url.strip_prefix("data:image/") {
+        let (metadata, encoded) = data
+            .split_once(',')
+            .ok_or_else(|| "Malformed embedded image.".to_string())?;
+        if !metadata
+            .split(';')
+            .any(|part| part.eq_ignore_ascii_case("base64"))
+        {
+            return Err("Only base64 embedded images are supported.".to_string());
+        }
+        if encoded.len() > MAX_MARKDOWN_IMAGE_BYTES * 2 {
+            return Err("Embedded image is too large.".to_string());
+        }
+        BASE64
+            .decode(encoded)
+            .map_err(|error| format!("Could not decode embedded image: {error}"))?
+    } else {
+        let parsed =
+            url::Url::parse(&url).map_err(|error| format!("Invalid image URL: {error}"))?;
+        if !remote_image_url_is_safe(&parsed) {
+            return Err("Blocked an unsafe or unsupported image URL.".to_string());
+        }
+
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(15))
+            .redirect(reqwest::redirect::Policy::custom(|attempt| {
+                if attempt.previous().len() >= 5 {
+                    attempt.stop()
+                } else if remote_image_url_is_safe(attempt.url()) {
+                    attempt.follow()
+                } else {
+                    attempt.stop()
+                }
+            }))
+            .build()
+            .map_err(|error| format!("Could not prepare image request: {error}"))?;
+        let response = client
+            .get(parsed)
+            .header(reqwest::header::USER_AGENT, "ollama-gui/0.5 image-preview")
+            .send()
+            .await
+            .and_then(reqwest::Response::error_for_status)
+            .map_err(|error| format!("Could not load image: {error}"))?;
+        if response
+            .content_length()
+            .is_some_and(|length| length > MAX_MARKDOWN_IMAGE_BYTES as u64)
+        {
+            return Err("Remote image is larger than the 12 MB display limit.".to_string());
+        }
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|error| format!("Could not read image: {error}"))?;
+        if bytes.len() > MAX_MARKDOWN_IMAGE_BYTES {
+            return Err("Remote image is larger than the 12 MB display limit.".to_string());
+        }
+        bytes.to_vec()
+    };
+
+    decoded_image_handle(&bytes)
+}
+
 fn convert_port_to_u16(port: String) -> u16 {
     match port.parse::<u16>() {
         Ok(p) => p,
@@ -510,7 +987,7 @@ fn load_chat_image(path: &Path) -> Result<ChatImage, String> {
     if bytes.len() > 20 * 1024 * 1024 {
         return Err("Images must be smaller than 20 MB.".to_string());
     }
-    image::load_from_memory(&bytes).map_err(|error| format!("Unsupported image: {error}"))?;
+    let preview_handle = decoded_image_handle(&bytes)?;
     let mime_type = match path
         .extension()
         .and_then(|value| value.to_str())
@@ -523,7 +1000,6 @@ fn load_chat_image(path: &Path) -> Result<ChatImage, String> {
         "gif" => "image/gif",
         _ => "image/png",
     };
-    let preview_handle = iced::widget::image::Handle::from_bytes(bytes.clone());
     Ok(ChatImage {
         name: path
             .file_name()
@@ -555,7 +1031,7 @@ fn paste_chat_image() -> Result<ChatImage, String> {
             image::ImageFormat::Png,
         )
         .map_err(|error| format!("Could not prepare clipboard image: {error}"))?;
-    let preview_handle = iced::widget::image::Handle::from_bytes(bytes.clone());
+    let preview_handle = decoded_image_handle(&bytes)?;
     Ok(ChatImage {
         name: "Pasted image.png".to_string(),
         mime_type: "image/png".to_string(),
@@ -641,9 +1117,88 @@ impl Program {
     }
 
     fn prompt_progress(&self) -> f32 {
-        let phase = (self.current_tick.rem_euclid(20) as f32) / 10.0;
-        let wave = if phase <= 1.0 { phase } else { 2.0 - phase };
-        0.12 + wave * 0.76
+        let elapsed = self
+            .active_prompts
+            .values()
+            .map(|job| job.started_at.elapsed())
+            .min()
+            .unwrap_or_default()
+            .as_secs_f32();
+        let phase = (elapsed / 1.4).fract();
+        let wave = 1.0 - (phase * 2.0 - 1.0).abs();
+        // Smooth the turnarounds so the indicator glides instead of bouncing.
+        let eased = wave * wave * (3.0 - 2.0 * wave);
+        0.24 + eased * 0.52
+    }
+
+    fn begin_page_transition(&mut self) {
+        self.page_reveal = 0.0;
+    }
+
+    fn queue_missing_markdown_images(&mut self) -> Task<Message> {
+        let mut urls = HashSet::new();
+        let mut collect = |items: &[markdown::Item]| {
+            for item in items {
+                if let markdown::Item::Image { url, .. } = item {
+                    urls.insert(url.clone());
+                }
+            }
+        };
+
+        for items in &self.chat_markdown_cache {
+            collect(items);
+        }
+        for job in self.active_prompts.values() {
+            collect(&job.parsed_markdown);
+        }
+        for response in self.vision_responses.values() {
+            collect(&response.markdown);
+        }
+
+        let mut tasks = Vec::new();
+        for url in urls {
+            if self.markdown_images.contains_key(&url) {
+                continue;
+            }
+
+            let is_supported = url.starts_with("data:image/")
+                || url::Url::parse(&url)
+                    .ok()
+                    .is_some_and(|parsed| remote_image_url_is_safe(&parsed));
+            if !is_supported {
+                self.markdown_images.insert(
+                    url,
+                    MarkdownImageState::Failed(
+                        "Unsupported image address. Use HTTPS or an embedded image.".to_string(),
+                    ),
+                );
+                continue;
+            }
+
+            self.markdown_images
+                .insert(url.clone(), MarkdownImageState::Loading);
+            let request_url = url.clone();
+            tasks.push(Task::perform(
+                load_markdown_image(request_url),
+                move |result| Message::MarkdownImageLoaded { url, result },
+            ));
+        }
+
+        Task::batch(tasks)
+    }
+
+    fn advance_ui_motion(&mut self) {
+        self.ui_motion = (self.ui_motion + 0.009).fract();
+        self.page_reveal += (1.0 - self.page_reveal) * 0.11;
+        if self.page_reveal > 0.998 {
+            self.page_reveal = 1.0;
+        }
+
+        let target = if self.chat_menu_open { 1.0 } else { 0.0 };
+        self.sidebar_animation += (target - self.sidebar_animation) * 0.15;
+        if (target - self.sidebar_animation).abs() < 0.002 {
+            self.sidebar_animation = target;
+        }
     }
 
     fn clear_open_chat(&mut self) {
@@ -652,15 +1207,19 @@ impl Program {
             messages: vec![],
             bot_responding: false,
         }));
+        self.chat_messages_cache.clear();
+        self.chat_thinking_cache.clear();
+        self.chat_visible_text_cache.clear();
         self.chat_markdown_cache.clear();
         self.chat_model_name_cache.clear();
         self.last_copied_text = None;
         self.last_copied_at = None;
         self.expanded_thinking.clear();
+        self.open_chat_dirty = false;
     }
 
     fn save_open_chat(&mut self) {
-        if self.temporary_chat {
+        if self.temporary_chat || !self.open_chat_dirty {
             return;
         }
         let chat = self.user_information.chat_history.lock().unwrap().clone();
@@ -669,6 +1228,7 @@ impl Program {
             &chat,
             self.web_search_for_chat,
         );
+        self.open_chat_dirty = false;
     }
 
     fn save_chat_snapshot(&mut self, id: String, chat: &CurrentChat, web_search_enabled: bool) {
@@ -747,12 +1307,45 @@ impl Program {
         }
     }
 
+    fn persist_dynamic_prompt_settings(&mut self) {
+        match serde_json::to_value(&self.dynamic_prompt_settings) {
+            Ok(value) => self.persist_setting_value("dynamic_prompt", value),
+            Err(error) => self.set_debug_message(DebugMessage {
+                message: format!("Could not save dynamic prompt settings: {error}"),
+                is_error: true,
+            }),
+        }
+    }
+
+    fn persist_ui_layout(&mut self) {
+        match serde_json::to_value(&self.ui_layout) {
+            Ok(value) => self.persist_setting_value("ui_layout", value),
+            Err(error) => self.set_debug_message(DebugMessage {
+                message: format!("Could not save UI layout: {error}"),
+                is_error: true,
+            }),
+        }
+    }
+
     fn persist_setting_value(&mut self, key: &str, value: serde_json::Value) {
+        self.pending_settings.insert(key.to_string(), value);
+        self.settings_dirty_at = Some(Instant::now());
+    }
+
+    fn flush_pending_settings_if_ready(&mut self) {
+        let Some(dirty_at) = self.settings_dirty_at else {
+            return;
+        };
+        if dirty_at.elapsed() < Duration::from_millis(SETTINGS_SAVE_DEBOUNCE_MS) {
+            return;
+        }
+
+        let pending = std::mem::take(&mut self.pending_settings);
         let mut settings: serde_json::Map<String, serde_json::Value> = load_settings_text()
             .and_then(|data| serde_json::from_str::<serde_json::Value>(&data).ok())
             .and_then(|value| value.as_object().cloned())
             .unwrap_or_default();
-        settings.insert(key.to_string(), value);
+        settings.extend(pending.clone());
         let settings_path = user_settings_path();
         let result = settings_path
             .parent()
@@ -765,10 +1358,14 @@ impl Program {
                 )
             });
         if let Err(error) = result {
+            self.pending_settings.extend(pending);
+            self.settings_dirty_at = Some(Instant::now());
             self.set_debug_message(DebugMessage {
                 message: format!("Could not save setting: {error}"),
                 is_error: true,
             });
+        } else {
+            self.settings_dirty_at = None;
         }
     }
 
@@ -820,46 +1417,60 @@ impl Program {
     }
 
     fn refresh_chat_markdown_cache(&mut self) {
-        let messages = {
-            let chat_history = self.user_information.chat_history.lock().unwrap();
-            chat_history.messages.clone()
-        };
+        let chat_history = Arc::clone(&self.user_information.chat_history);
+        let chat_history = chat_history.lock().unwrap();
+        let message_count = chat_history.messages.len();
+        self.chat_markdown_cache.truncate(message_count);
+        self.chat_model_name_cache.truncate(message_count);
+        self.chat_thinking_cache.truncate(message_count);
+        self.chat_visible_text_cache.truncate(message_count);
 
-        let old_markdown_cache = self.chat_markdown_cache.clone();
-        let old_model_name_cache = self.chat_model_name_cache.clone();
+        for (index, message) in chat_history.messages.iter().enumerate() {
+            if index < self.chat_markdown_cache.len() {
+                if self.chat_model_name_cache[index].is_none()
+                    && let Correspondence::Bot { model, .. } = message
+                {
+                    self.chat_model_name_cache[index] = model.clone();
+                }
+                continue;
+            }
 
-        let mut new_markdown_cache: Vec<Vec<markdown::Item>> = Vec::with_capacity(messages.len());
-        let mut new_model_name_cache: Vec<Option<String>> = Vec::with_capacity(messages.len());
-
-        for (index, message) in messages.iter().enumerate() {
             match message {
                 Correspondence::User { .. } => {
-                    new_markdown_cache.push(Vec::new());
-                    new_model_name_cache.push(None);
+                    self.chat_markdown_cache.push(Vec::new());
+                    self.chat_model_name_cache.push(None);
+                    self.chat_thinking_cache.push(String::new());
+                    self.chat_visible_text_cache.push(String::new());
                 }
 
                 Correspondence::Bot { text, model, .. } => {
-                    let (_, visible_text) = split_thinking_text(text);
-                    if let Some(cached) = old_markdown_cache.get(index) {
-                        new_markdown_cache.push(cached.clone());
-                    } else {
-                        new_markdown_cache.push(parse_markdown_items(&visible_text));
-                    }
-
-                    let model_name = old_model_name_cache
-                        .get(index)
-                        .cloned()
-                        .flatten()
-                        .or_else(|| model.clone())
-                        .or_else(|| Some("Unknown model".to_string()));
-
-                    new_model_name_cache.push(model_name);
+                    let (thinking, visible_text) = split_thinking_text(text);
+                    self.chat_markdown_cache
+                        .push(parse_markdown_items(&visible_text));
+                    self.chat_thinking_cache.push(thinking);
+                    self.chat_visible_text_cache.push(visible_text);
+                    let model_name = model.clone().or_else(|| Some("Unknown model".to_string()));
+                    self.chat_model_name_cache.push(model_name);
                 }
             }
         }
+        self.chat_messages_cache.clone_from(&chat_history.messages);
+    }
 
-        self.chat_markdown_cache = new_markdown_cache;
-        self.chat_model_name_cache = new_model_name_cache;
+    fn drain_live_updates(&mut self) {
+        for job in self.active_prompts.values_mut() {
+            while let Ok(state) = job.web_search_state_receiver.try_recv() {
+                job.web_search_state = state;
+            }
+            while let Ok(render) = job.render_receiver.try_recv() {
+                job.response_text = render.text;
+                job.thinking_text = render.thinking;
+                job.parsed_markdown = render.markdown;
+            }
+        }
+        while let Ok((chat_id, notice)) = self.chat_notice_receiver.try_recv() {
+            self.chat_notices.insert(chat_id, (notice, Instant::now()));
+        }
     }
 
     fn clear_copy_feedback_if_old(&mut self) {
@@ -952,6 +1563,7 @@ impl Program {
             self.user_information.chat_history = Arc::clone(&job.chat_history);
             self.expanded_thinking.remove(&usize::MAX);
             self.refresh_chat_markdown_cache();
+            self.open_chat_dirty = false;
         }
     }
 
@@ -980,29 +1592,30 @@ impl Program {
         // Keep only the newest full Markdown snapshot. A long response can
         // otherwise queue many increasingly large copies while its chat is in
         // the background.
-        let (markdown_sender, markdown_receiver) = crossbeam_channel::bounded(1);
-        let markdown_receiver_for_renderer = markdown_receiver.clone();
+        let (render_sender, render_receiver) = crossbeam_channel::bounded(1);
+        let render_receiver_for_renderer = render_receiver.clone();
 
         // Backpressure bounds token memory if highlighting a large response is
         // temporarily slower than Ollama's stream.
         let (tx, mut rx) = tokio::sync::mpsc::channel::<GenerationResponse>(64);
         let batch_tokens = self.batch_tokens;
         let fast_streaming = self.fast_streaming;
-        let response_string = Arc::new(Mutex::new(String::new()));
-        let response_string_for_renderer = Arc::clone(&response_string);
-
         std::thread::spawn(move || {
             fn render(
                 buffer: &str,
-                markdown_sender: &crossbeam_channel::Sender<Vec<markdown::Item>>,
-                markdown_receiver: &crossbeam_channel::Receiver<Vec<markdown::Item>>,
+                render_sender: &crossbeam_channel::Sender<LiveRender>,
+                render_receiver: &crossbeam_channel::Receiver<LiveRender>,
             ) {
-                let (_, visible) = split_thinking_text(buffer);
-                let md = parse_markdown_items(&visible);
-                while markdown_receiver.try_recv().is_ok() {}
+                let (thinking, visible) = split_thinking_text(buffer);
+                let render = LiveRender {
+                    text: buffer.to_string(),
+                    thinking,
+                    markdown: parse_markdown_items(&visible),
+                };
+                while render_receiver.try_recv().is_ok() {}
                 // A disconnected receiver means the completed job has already
                 // been reconciled into its chat history.
-                let _ = markdown_sender.try_send(md);
+                let _ = render_sender.try_send(render);
             }
 
             let mut buffer = String::new();
@@ -1011,10 +1624,6 @@ impl Program {
 
             while let Some(token) = rx.blocking_recv() {
                 buffer.push_str(&token.response);
-
-                if let Ok(mut current_response) = response_string_for_renderer.lock() {
-                    *current_response = buffer.clone();
-                }
 
                 total_tokens += 1;
 
@@ -1033,19 +1642,16 @@ impl Program {
                 total_tokens = 0;
                 last_render_time = Instant::now();
 
-                render(&buffer, &markdown_sender, &markdown_receiver_for_renderer);
+                render(&buffer, &render_sender, &render_receiver_for_renderer);
             }
 
             if !buffer.is_empty() {
-                if let Ok(mut current_response) = response_string_for_renderer.lock() {
-                    *current_response = buffer.clone();
-                }
-
-                render(&buffer, &markdown_sender, &markdown_receiver_for_renderer);
+                render(&buffer, &render_sender, &render_receiver_for_renderer);
             }
         });
 
-        let system_prompt: Option<String> = SystemPrompt::get_current(self);
+        let system_prompt: Option<String> = SystemPrompt::get_current(self)
+            .map(|base| self.dynamic_prompt_settings.apply(&base, Local::now()));
 
         if system_prompt.is_none() {
             Channels::send_request_to_channel(
@@ -1085,6 +1691,7 @@ impl Program {
             });
             chat.messages.len()
         };
+        self.open_chat_dirty = true;
 
         self.refresh_chat_markdown_cache();
         self.pending_images.clear();
@@ -1096,9 +1703,10 @@ impl Program {
             chat_id,
             ActivePrompt {
                 chat_history: Arc::clone(&user_info.chat_history),
-                response_as_string: response_string,
+                response_text: String::new(),
+                thinking_text: String::new(),
                 parsed_markdown: parse_markdown_items("Waiting for bot..."),
-                markdown_receiver,
+                render_receiver,
                 web_search_state: WebSearchState::Idle,
                 web_search_state_receiver,
                 cancel: Arc::clone(&cancel),
@@ -1593,7 +2201,10 @@ impl Program {
     }
 
     fn boot() -> (Program, Task<Message>) {
-        (Program::default(), Task::none())
+        let mut program = Program::default();
+        program.refresh_chat_markdown_cache();
+        let task = program.queue_missing_markdown_images();
+        (program, task)
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
@@ -1602,7 +2213,8 @@ impl Program {
 
             Message::PromptFinished(chat_id) => {
                 self.finish_prompt(&chat_id);
-                Task::none()
+                self.begin_page_transition();
+                self.queue_missing_markdown_images()
             }
 
             Message::None => Task::none(),
@@ -1613,6 +2225,7 @@ impl Program {
                 } else {
                     GUIState::Images
                 };
+                self.begin_page_transition();
                 Task::none()
             }
 
@@ -1677,6 +2290,17 @@ impl Program {
                     }
                     Err(_) => {}
                 }
+                Task::none()
+            }
+
+            Message::MarkdownImageLoaded { url, result } => {
+                self.markdown_images.insert(
+                    url,
+                    match result {
+                        Ok(handle) => MarkdownImageState::Ready(handle),
+                        Err(error) => MarkdownImageState::Failed(error),
+                    },
+                );
                 Task::none()
             }
 
@@ -1752,6 +2376,7 @@ impl Program {
                     }),
                     Ok(path) => {
                         self.generated_images.push(path);
+                        self.begin_page_transition();
                         self.set_debug_message(DebugMessage {
                             message: "Image generated locally.".to_string(),
                             is_error: false,
@@ -1778,6 +2403,55 @@ impl Program {
 
             Message::ToggleChatMenu => {
                 self.chat_menu_open = !self.chat_menu_open;
+                Task::none()
+            }
+
+            Message::StartUiResize(target) => {
+                self.ui_resize_target = Some(target);
+                Task::none()
+            }
+
+            Message::UiResizeMoved(position) => {
+                let changed = match self.ui_resize_target {
+                    Some(UiResizeTarget::Sidebar) if self.chat_menu_open => {
+                        let width = (position.x - 10.0).clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
+                        if (self.ui_layout.sidebar_width - width).abs() >= 0.5 {
+                            self.ui_layout.sidebar_width = width;
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    Some(UiResizeTarget::Composer) => {
+                        let height = (self.window_size.height - position.y - 10.0)
+                            .clamp(MIN_COMPOSER_HEIGHT, MAX_COMPOSER_HEIGHT);
+                        if (self.ui_layout.composer_height - height).abs() >= 0.5 {
+                            self.ui_layout.composer_height = height;
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    _ => false,
+                };
+                if changed {
+                    self.persist_ui_layout();
+                }
+                Task::none()
+            }
+
+            Message::StopUiResize => {
+                if self.ui_resize_target.take().is_some() {
+                    self.persist_ui_layout();
+                    self.settings_dirty_at =
+                        Some(Instant::now() - Duration::from_millis(SETTINGS_SAVE_DEBOUNCE_MS));
+                    self.flush_pending_settings_if_ready();
+                }
+                Task::none()
+            }
+
+            Message::WindowResized(size) => {
+                self.window_size = size;
                 Task::none()
             }
 
@@ -1867,6 +2541,7 @@ impl Program {
                 self.temporary_chat = false;
                 self.web_search_for_chat = self.web_search_settings.enabled;
                 self.clear_open_chat();
+                self.begin_page_transition();
                 Task::none()
             }
 
@@ -1908,16 +2583,21 @@ impl Program {
                         .or(saved_web_search_enabled)
                         .unwrap_or(self.web_search_settings.enabled);
                     self.user_information.chat_history = chat_history;
+                    self.open_chat_dirty = false;
                     // Rendering caches are positional and belong only to the
                     // previously open chat.
+                    self.chat_messages_cache.clear();
+                    self.chat_thinking_cache.clear();
+                    self.chat_visible_text_cache.clear();
                     self.chat_markdown_cache.clear();
                     self.chat_model_name_cache.clear();
                     self.expanded_thinking.clear();
                     self.last_copied_text = None;
                     self.last_copied_at = None;
                     self.refresh_chat_markdown_cache();
+                    self.begin_page_transition();
                 }
-                Task::none()
+                self.queue_missing_markdown_images()
             }
 
             Message::DeleteChat(id) => {
@@ -1934,6 +2614,7 @@ impl Program {
                 if self.current_chat_id == id {
                     self.current_chat_id = Self::new_chat_id();
                     self.clear_open_chat();
+                    self.begin_page_transition();
                 }
                 self.persist_saved_chats();
                 Task::none()
@@ -1948,6 +2629,7 @@ impl Program {
                     self.temporary_chat = false;
                     self.web_search_for_chat = self.web_search_settings.enabled;
                     self.clear_open_chat();
+                    self.begin_page_transition();
                 }
                 Task::none()
             }
@@ -1981,6 +2663,7 @@ impl Program {
                     self.web_search_for_chat = self.web_search_settings.enabled;
                     self.clear_open_chat();
                 }
+                self.begin_page_transition();
                 Task::none()
             }
 
@@ -2046,20 +2729,17 @@ impl Program {
 
             Message::ChatFolderSelected(None) => Task::none(),
 
+            Message::FrameTick => {
+                self.drain_live_updates();
+                self.advance_ui_motion();
+                self.queue_missing_markdown_images()
+            }
+
             Message::Tick => {
                 self.clear_debug_message_if_old();
                 self.clear_copy_feedback_if_old();
-                for job in self.active_prompts.values_mut() {
-                    while let Ok(state) = job.web_search_state_receiver.try_recv() {
-                        job.web_search_state = state;
-                    }
-                    while let Ok(markdown) = job.markdown_receiver.try_recv() {
-                        job.parsed_markdown = markdown;
-                    }
-                }
-                while let Ok((chat_id, notice)) = self.chat_notice_receiver.try_recv() {
-                    self.chat_notices.insert(chat_id, (notice, Instant::now()));
-                }
+                self.flush_pending_settings_if_ready();
+                self.drain_live_updates();
 
                 if self.current_tick > MAX_TICK {
                     println!("Resetting current tick");
@@ -2189,9 +2869,7 @@ impl Program {
                     };
                 }
 
-                self.refresh_chat_markdown_cache();
-
-                Task::none()
+                self.queue_missing_markdown_images()
             }
 
             Message::ChangeIp(ip) => {
@@ -2225,6 +2903,7 @@ impl Program {
                 self.app_state.dark_mode = !self.app_state.dark_mode;
                 gui::set_dark_mode(self.app_state.dark_mode);
                 self.persist_boolean_setting("dark_mode", self.app_state.dark_mode);
+                self.begin_page_transition();
                 Task::none()
             }
 
@@ -2240,6 +2919,7 @@ impl Program {
                         .to_string(),
                     is_error: false,
                 });
+                self.begin_page_transition();
 
                 Task::none()
             }
@@ -2255,6 +2935,7 @@ impl Program {
                 } else {
                     self.app_state.gui_state = GUIState::InfoPopup;
                 }
+                self.begin_page_transition();
 
                 Task::none()
             }
@@ -2265,6 +2946,7 @@ impl Program {
                 } else {
                     self.app_state.gui_state = GUIState::Settings;
                 }
+                self.begin_page_transition();
 
                 Task::none()
             }
@@ -2275,6 +2957,7 @@ impl Program {
                 } else {
                     self.app_state.gui_state = GUIState::AdvancedSettings;
                 }
+                self.begin_page_transition();
 
                 Task::none()
             }
@@ -2285,18 +2968,145 @@ impl Program {
             }
 
             Message::UpdateMaxResponseTokens(value) => {
-                let tokens = ((value / 512.0).round() as u32 * 512)
+                let tokens = 1_u32
+                    .checked_shl(value.round().clamp(9.0, 20.0) as u32)
+                    .unwrap_or(DEFAULT_MAX_RESPONSE_TOKENS)
                     .clamp(MIN_RESPONSE_TOKENS, MAX_RESPONSE_TOKENS);
                 self.user_information.max_response_tokens = tokens;
+                self.max_response_tokens_input = tokens.to_string();
                 self.persist_setting_value("max_response_tokens", serde_json::Value::from(tokens));
                 Task::none()
             }
 
+            Message::EditMaxResponseTokens(value) => {
+                self.max_response_tokens_input = value;
+                Task::none()
+            }
+
+            Message::ApplyMaxResponseTokens => {
+                match self.max_response_tokens_input.trim().parse::<u32>() {
+                    Ok(tokens) if (MIN_RESPONSE_TOKENS..=MAX_RESPONSE_TOKENS).contains(&tokens) => {
+                        self.user_information.max_response_tokens = tokens;
+                        self.persist_setting_value(
+                            "max_response_tokens",
+                            serde_json::Value::from(tokens),
+                        );
+                    }
+                    _ => self.set_debug_message(DebugMessage {
+                        message: format!(
+                            "Maximum response must be between {MIN_RESPONSE_TOKENS} and {MAX_RESPONSE_TOKENS} tokens."
+                        ),
+                        is_error: true,
+                    }),
+                }
+                Task::none()
+            }
+
             Message::UpdateContextTokens(value) => {
-                let tokens = ((value / 1_024.0).round() as u32 * 1_024)
+                let tokens = 1_u32
+                    .checked_shl(value.round().clamp(12.0, 22.0) as u32)
+                    .unwrap_or(DEFAULT_CONTEXT_TOKENS)
                     .clamp(MIN_CONTEXT_TOKENS, MAX_CONTEXT_TOKENS);
                 self.user_information.context_tokens = tokens;
+                self.context_tokens_input = tokens.to_string();
                 self.persist_setting_value("context_tokens", serde_json::Value::from(tokens));
+                Task::none()
+            }
+
+            Message::EditContextTokens(value) => {
+                self.context_tokens_input = value;
+                Task::none()
+            }
+
+            Message::ApplyContextTokens => {
+                match self.context_tokens_input.trim().parse::<u32>() {
+                    Ok(tokens) if (MIN_CONTEXT_TOKENS..=MAX_CONTEXT_TOKENS).contains(&tokens) => {
+                        self.user_information.context_tokens = tokens;
+                        self.persist_setting_value(
+                            "context_tokens",
+                            serde_json::Value::from(tokens),
+                        );
+                    }
+                    _ => self.set_debug_message(DebugMessage {
+                        message: format!(
+                            "Context window must be between {MIN_CONTEXT_TOKENS} and {MAX_CONTEXT_TOKENS} tokens."
+                        ),
+                        is_error: true,
+                    }),
+                }
+                Task::none()
+            }
+
+            Message::ToggleCodeChecking => {
+                self.code_checking_enabled = !self.code_checking_enabled;
+                self.persist_boolean_setting("code_checking_enabled", self.code_checking_enabled);
+                Task::none()
+            }
+
+            Message::CheckCode(language, code) => {
+                if !self.code_checking_enabled {
+                    self.set_debug_message(DebugMessage {
+                        message:
+                            "Enable code checking in Advanced settings before running local tools."
+                                .into(),
+                        is_error: true,
+                    });
+                    return Task::none();
+                }
+                self.set_debug_message(DebugMessage {
+                    message: format!("Checking {language} code…"),
+                    is_error: false,
+                });
+                Task::perform(
+                    async move { check_code(language, code) },
+                    Message::CodeChecked,
+                )
+            }
+
+            Message::CodeChecked(result) => {
+                self.set_debug_message(match result {
+                    Ok(message) => DebugMessage {
+                        message,
+                        is_error: false,
+                    },
+                    Err(message) => DebugMessage {
+                        message,
+                        is_error: true,
+                    },
+                });
+                Task::none()
+            }
+
+            Message::ToggleDynamicDate => {
+                self.dynamic_prompt_settings.include_date =
+                    !self.dynamic_prompt_settings.include_date;
+                self.persist_dynamic_prompt_settings();
+                Task::none()
+            }
+
+            Message::ToggleDynamicTime => {
+                self.dynamic_prompt_settings.include_time =
+                    !self.dynamic_prompt_settings.include_time;
+                self.persist_dynamic_prompt_settings();
+                Task::none()
+            }
+
+            Message::ToggleDynamicUserName => {
+                self.dynamic_prompt_settings.include_user_name =
+                    !self.dynamic_prompt_settings.include_user_name;
+                self.persist_dynamic_prompt_settings();
+                Task::none()
+            }
+
+            Message::DynamicUserNameChanged(value) => {
+                self.dynamic_prompt_settings.user_name = value;
+                self.persist_dynamic_prompt_settings();
+                Task::none()
+            }
+
+            Message::DynamicCustomInstructionsChanged(value) => {
+                self.dynamic_prompt_settings.custom_instructions = value;
+                self.persist_dynamic_prompt_settings();
                 Task::none()
             }
 
@@ -2324,13 +3134,28 @@ impl Program {
 
             Message::ModelCapabilitiesKnown(model, capabilities) => {
                 if self.user_information.model.as_ref() == Some(&model)
-                    && let Some((thinking, vision, image_generation)) = capabilities
+                    && let Some(capabilities) = capabilities
                 {
+                    let thinking = capabilities
+                        .thinking_levels
+                        .iter()
+                        .any(|level| *level != ThinkingLevel::Off);
                     self.user_information.thinking_supported = Some(thinking);
-                    self.user_information.vision_supported = Some(vision);
-                    self.user_information.image_generation_supported = Some(image_generation);
-                    if !thinking {
-                        self.user_information.thinking_level = ThinkingLevel::Off;
+                    self.user_information.vision_supported = Some(capabilities.vision);
+                    self.user_information.image_generation_supported =
+                        Some(capabilities.image_generation);
+                    self.user_information.thinking_levels = capabilities.thinking_levels;
+                    if !self
+                        .user_information
+                        .thinking_levels
+                        .contains(&self.user_information.thinking_level)
+                    {
+                        self.user_information.thinking_level = self
+                            .user_information
+                            .thinking_levels
+                            .first()
+                            .copied()
+                            .unwrap_or(ThinkingLevel::Off);
                     }
                 }
                 Task::none()
@@ -2403,6 +3228,7 @@ impl Program {
                 self.user_information.thinking_supported = None;
                 self.user_information.vision_supported = None;
                 self.user_information.image_generation_supported = None;
+                self.user_information.thinking_levels = vec![ThinkingLevel::Off];
                 // Reasoning support and accepted effort values vary by model. Do not carry an
                 // effort setting across models while capability detection is still in flight.
                 self.user_information.thinking_level = ThinkingLevel::Off;
@@ -2455,6 +3281,42 @@ impl Program {
                 }
             }
 
+            Message::CopyLatestResponse => {
+                let input = self
+                    .current_active_prompt()
+                    .filter(|job| !job.response_text.trim().is_empty())
+                    .map(|job| split_thinking_text(&job.response_text).1)
+                    .or_else(|| {
+                        self.chat_messages_cache.iter().enumerate().rev().find_map(
+                            |(index, message)| {
+                                matches!(message, Correspondence::Bot { .. }).then(|| {
+                                    self.chat_visible_text_cache
+                                        .get(index)
+                                        .cloned()
+                                        .unwrap_or_default()
+                                })
+                            },
+                        )
+                    })
+                    .unwrap_or_default();
+
+                if input.trim().is_empty() {
+                    self.set_debug_message(DebugMessage {
+                        message: "Nothing to copy yet.".to_string(),
+                        is_error: true,
+                    });
+                    Task::none()
+                } else {
+                    self.last_copied_text = Some(input.clone());
+                    self.last_copied_at = Some(Instant::now());
+                    self.set_debug_message(DebugMessage {
+                        message: "Copied to clipboard.".to_string(),
+                        is_error: false,
+                    });
+                    clipboard::write::<Message>(input)
+                }
+            }
+
             Message::KeyPressed(keyboard::Key::Character(key), modifiers)
                 if modifiers.control() && key.eq_ignore_ascii_case("v") =>
             {
@@ -2496,7 +3358,9 @@ impl Program {
                     if prompt.is_empty() {
                         prompt = "Describe this image in detail.".to_string();
                     }
-                    self.prompt.prompt = String::new();
+                    self.prompt.prompt.clear();
+                    self.prompt.editor = iced::widget::text_editor::Content::new();
+                    self.begin_page_transition();
                     return Self::prompt(self, prompt);
                 }
 
@@ -2520,8 +3384,15 @@ impl Program {
                 Task::none()
             }
 
-            Message::UpdatePrompt(prompt) => {
-                self.prompt.prompt = prompt;
+            Message::EditPrompt(action) => {
+                self.prompt.editor.perform(action);
+                self.prompt.prompt = self.prompt.editor.text();
+                Task::none()
+            }
+
+            Message::UseSuggestion(suggestion) => {
+                self.prompt.editor = iced::widget::text_editor::Content::with_text(&suggestion);
+                self.prompt.prompt = suggestion;
                 Task::none()
             }
 
@@ -2537,10 +3408,14 @@ impl Program {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        Subscription::batch(vec![
+        let mut subscriptions = vec![
             iced::event::listen().filter_map(|event| match event {
                 iced::event::Event::Window(iced::window::Event::FileDropped(path)) => {
                     Some(Message::DropImage(path))
+                }
+                iced::event::Event::Window(iced::window::Event::Opened { size, .. })
+                | iced::event::Event::Window(iced::window::Event::Resized(size)) => {
+                    Some(Message::WindowResized(size))
                 }
                 iced::event::Event::Keyboard(keyboard::Event::KeyPressed {
                     key,
@@ -2564,7 +3439,25 @@ impl Program {
                 _ => None,
             }),
             time::every(Duration::from_millis(TICK_MS)).map(|_| Message::Tick),
-        ])
+        ];
+        if self.ui_resize_target.is_some() {
+            subscriptions.push(iced::event::listen_with(
+                |event, _status, _window| match event {
+                    iced::event::Event::Mouse(mouse::Event::CursorMoved { position }) => {
+                        Some(Message::UiResizeMoved(position))
+                    }
+                    iced::event::Event::Mouse(mouse::Event::ButtonReleased(
+                        mouse::Button::Left,
+                    )) => Some(Message::StopUiResize),
+                    _ => None,
+                },
+            ));
+        }
+        // The UI has a restrained ambient motion layer (status pulse, loading
+        // shimmer, page reveals) in addition to response and sidebar animation.
+        subscriptions
+            .push(time::every(Duration::from_millis(UI_FRAME_MS)).map(|_| Message::FrameTick));
+        Subscription::batch(subscriptions)
     }
 }
 
@@ -2648,10 +3541,22 @@ impl Default for Program {
         let info_popup = setting_bool("info_popup", false);
         let fast_streaming = setting_bool("fast_streaming", true);
         let current_chat_history_enabled = setting_bool("current_chat_history_enabled", true);
+        let code_checking_enabled = setting_bool("code_checking_enabled", false);
+        let dynamic_prompt_settings = settings_hmap
+            .get("dynamic_prompt")
+            .cloned()
+            .and_then(|value| serde_json::from_value::<DynamicPromptSettings>(value).ok())
+            .unwrap_or_default();
         let web_search_settings = settings_hmap
             .get("web_search")
             .cloned()
             .and_then(|value| serde_json::from_value::<WebSearchSettings>(value).ok())
+            .unwrap_or_default()
+            .normalized();
+        let ui_layout = settings_hmap
+            .get("ui_layout")
+            .cloned()
+            .and_then(|value| serde_json::from_value::<UiLayoutSettings>(value).ok())
             .unwrap_or_default()
             .normalized();
         let max_response_tokens = setting_u32(
@@ -2754,12 +3659,25 @@ impl Default for Program {
             batch_tokens: 3,
             fast_streaming,
             chat_menu_open: true,
+            sidebar_animation: 1.0,
+            ui_motion: 0.0,
+            page_reveal: 0.0,
+            ui_layout,
+            ui_resize_target: None,
+            window_size: Size::new(1100.0, 800.0),
             temporary_chat: false,
             web_search_for_chat,
             web_search_settings,
             current_chat_id,
+            open_chat_dirty: false,
             saved_chats,
             chat_storage_dir,
+            code_checking_enabled,
+            dynamic_prompt_settings,
+            max_response_tokens_input: max_response_tokens.to_string(),
+            context_tokens_input: context_tokens.to_string(),
+            pending_settings: serde_json::Map::new(),
+            settings_dirty_at: None,
             active_prompts: HashMap::new(),
             temporary_chats: HashMap::new(),
             chat_notices: HashMap::new(),
@@ -2778,6 +3696,9 @@ impl Default for Program {
                 Some(Instant::now())
             },
             chat_markdown_cache: Vec::new(),
+            chat_messages_cache: Vec::new(),
+            chat_thinking_cache: Vec::new(),
+            chat_visible_text_cache: Vec::new(),
             chat_model_name_cache: Vec::new(),
             last_copied_text: None,
             last_copied_at: None,
@@ -2785,6 +3706,7 @@ impl Default for Program {
             generated_images: load_generated_images(),
             is_generating_image: false,
             vision_responses: HashMap::new(),
+            markdown_images: HashMap::new(),
             expanded_thinking: HashSet::new(),
 
             system_prompt: SystemPrompt {
@@ -2801,6 +3723,7 @@ impl Default for Program {
                 current_chat_history_enabled,
                 model: None,
                 thinking_level: ThinkingLevel::Off,
+                thinking_levels: vec![ThinkingLevel::Off],
                 thinking_supported: None,
                 vision_supported: None,
                 image_generation_supported: None,
@@ -2816,6 +3739,7 @@ impl Default for Program {
             },
             prompt: Prompt {
                 prompt: String::new(),
+                editor: iced::widget::text_editor::Content::new(),
             },
             app_state: AppState {
                 filtering,
@@ -2866,7 +3790,7 @@ pub fn main() -> iced::Result {
         ..iced::window::Settings::default()
     };
 
-    iced::application(Program::boot, Program::update, Program::view)
+    let application = iced::application(Program::boot, Program::update, Program::view)
         .subscription(Program::subscription)
         .theme(|program: &Program| {
             if program.app_state.dark_mode {
@@ -2877,6 +3801,11 @@ pub fn main() -> iced::Result {
         })
         .window_size(Size::new(1100.0, 800.0))
         .window(window_settings)
+        .antialiasing(true);
+
+    fallback_font_bytes()
+        .into_iter()
+        .fold(application, |application, font| application.font(font))
         .run()
 }
 
@@ -2889,22 +3818,25 @@ mod tests {
     use iced_widget::markdown;
 
     use super::{
-        ActivePrompt, Correspondence, CurrentChat, Message, Program, WebSearchState, app_data_dir,
-        censor_text, decode_generation_line, disabled_web_tool_message, model_capabilities,
-        normalize_code_fence_languages, parse_markdown_items, split_thinking_text,
+        ActivePrompt, Correspondence, CurrentChat, Message, ModelCapabilities, Point, Program,
+        Size, ThinkingLevel, UiResizeTarget, WebSearchState, app_data_dir, canonical_code_language,
+        censor_text, decode_generation_line, disabled_web_tool_message, generated_image_payload,
+        model_capabilities, normalize_code_fence_languages, parse_markdown_items,
+        remote_image_url_is_safe, split_thinking_text,
     };
 
     fn test_active_prompt(
         chat_history: Arc<Mutex<CurrentChat>>,
         cancel: Arc<AtomicBool>,
     ) -> ActivePrompt {
-        let (_markdown_sender, markdown_receiver) = crossbeam_channel::unbounded();
+        let (_render_sender, render_receiver) = crossbeam_channel::unbounded();
         let (_web_sender, web_search_state_receiver) = crossbeam_channel::unbounded();
         ActivePrompt {
             chat_history,
-            response_as_string: Arc::new(Mutex::new("Background answer".to_string())),
+            response_text: "Background answer".to_string(),
+            thinking_text: String::new(),
             parsed_markdown: Vec::new(),
-            markdown_receiver,
+            render_receiver,
             web_search_state: WebSearchState::Idle,
             web_search_state_receiver,
             cancel,
@@ -2920,6 +3852,119 @@ mod tests {
     #[test]
     fn content_filter_replaces_entire_inappropriate_words_with_hashes() {
         assert_eq!(censor_text("hello crap"), "hello ####");
+    }
+
+    #[test]
+    fn prompt_editor_preserves_multiple_lines() {
+        use iced::widget::text_editor::{Action, Edit};
+
+        let mut program = Program::default();
+        let _ = program.update(Message::EditPrompt(Action::Edit(Edit::Paste(Arc::new(
+            "first line".to_string(),
+        )))));
+        let _ = program.update(Message::EditPrompt(Action::Edit(Edit::Enter)));
+        let _ = program.update(Message::EditPrompt(Action::Edit(Edit::Paste(Arc::new(
+            "second line".to_string(),
+        )))));
+
+        assert_eq!(program.prompt.prompt, "first line\nsecond line");
+    }
+
+    #[test]
+    fn starter_suggestion_fills_the_composer_without_sending() {
+        let mut program = Program::default();
+        let suggestion = "Help me plan a small project.".to_string();
+
+        let _ = program.update(Message::UseSuggestion(suggestion.clone()));
+
+        assert_eq!(program.prompt.prompt, suggestion);
+        assert_eq!(program.prompt.editor.text(), suggestion);
+        assert!(program.active_prompts.is_empty());
+    }
+
+    #[test]
+    fn sidebar_motion_eases_toward_its_target() {
+        let mut program = Program {
+            chat_menu_open: false,
+            ..Program::default()
+        };
+        program.advance_ui_motion();
+        assert!(program.sidebar_animation < 1.0);
+        assert!(program.sidebar_animation > 0.0);
+
+        for _ in 0..40 {
+            program.advance_ui_motion();
+        }
+        assert_eq!(program.sidebar_animation, 0.0);
+
+        program.chat_menu_open = true;
+        program.advance_ui_motion();
+        assert!(program.sidebar_animation > 0.0);
+    }
+
+    #[test]
+    fn finished_chat_render_cache_is_reused_until_messages_change() {
+        let mut program = Program::default();
+        *program.user_information.chat_history.lock().unwrap() = CurrentChat {
+            chats: Vec::new(),
+            messages: vec![Correspondence::Bot {
+                text: "<think>Reasoning</think>Visible answer".into(),
+                model: Some("test-model".into()),
+                thinking_seconds: Some(1),
+                sources: Vec::new(),
+                web_search_used: false,
+            }],
+            bot_responding: false,
+        };
+
+        program.refresh_chat_markdown_cache();
+        let markdown_address = program.chat_markdown_cache[0].as_ptr();
+        assert_eq!(program.chat_thinking_cache[0], "Reasoning");
+        assert_eq!(program.chat_visible_text_cache[0], "Visible answer");
+
+        program.refresh_chat_markdown_cache();
+        assert_eq!(program.chat_markdown_cache[0].as_ptr(), markdown_address);
+        assert_eq!(program.chat_messages_cache.len(), 1);
+    }
+
+    #[test]
+    fn rapid_setting_changes_are_coalesced_before_disk_io() {
+        let mut program = Program::default();
+        program.persist_setting_value("test-setting", serde_json::json!(1));
+        program.persist_setting_value("test-setting", serde_json::json!(2));
+
+        assert_eq!(program.pending_settings.len(), 1);
+        assert_eq!(
+            program.pending_settings.get("test-setting"),
+            Some(&serde_json::json!(2))
+        );
+        assert!(program.settings_dirty_at.is_some());
+    }
+
+    #[test]
+    fn drag_resizing_updates_bounded_persisted_layout_values() {
+        let mut program = Program {
+            window_size: Size::new(1100.0, 800.0),
+            ..Program::default()
+        };
+
+        let _ = program.update(Message::StartUiResize(UiResizeTarget::Sidebar));
+        let _ = program.update(Message::UiResizeMoved(Point::new(390.0, 300.0)));
+        assert_eq!(program.ui_layout.sidebar_width, 380.0);
+
+        let _ = program.update(Message::StartUiResize(UiResizeTarget::Composer));
+        let _ = program.update(Message::UiResizeMoved(Point::new(500.0, 590.0)));
+        assert_eq!(program.ui_layout.composer_height, 200.0);
+        assert!(program.pending_settings.contains_key("ui_layout"));
+    }
+
+    #[test]
+    fn code_checker_recognizes_only_supported_fence_languages() {
+        assert_eq!(canonical_code_language("python3"), Some("Python"));
+        assert_eq!(canonical_code_language("rs"), Some("Rust"));
+        assert_eq!(canonical_code_language("c++"), Some("C++"));
+        assert_eq!(canonical_code_language("csharp"), Some("C#"));
+        assert_eq!(canonical_code_language("javascript"), None);
     }
 
     #[test]
@@ -2951,10 +3996,57 @@ mod tests {
         let details = serde_json::json!({
             "capabilities": ["completion", "thinking", "vision"]
         });
-        assert_eq!(model_capabilities(&details), Some((true, true, false)));
+        assert_eq!(
+            model_capabilities(&details),
+            Some(ModelCapabilities {
+                thinking_levels: vec![ThinkingLevel::Off, ThinkingLevel::On],
+                vision: true,
+                image_generation: false,
+            })
+        );
 
         let generator = serde_json::json!({ "capabilities": ["image"] });
-        assert_eq!(model_capabilities(&generator), Some((false, false, true)));
+        assert_eq!(
+            model_capabilities(&generator),
+            Some(ModelCapabilities {
+                thinking_levels: vec![ThinkingLevel::Off],
+                vision: false,
+                image_generation: true,
+            })
+        );
+    }
+
+    #[test]
+    fn detects_model_specific_reasoning_efforts() {
+        let reported = serde_json::json!({
+            "capabilities": ["completion", "thinking"],
+            "model_info": {
+                "supported_reasoning_levels": ["none", "minimal", "low", "high", "max"]
+            }
+        });
+        assert_eq!(
+            model_capabilities(&reported).unwrap().thinking_levels,
+            vec![
+                ThinkingLevel::Off,
+                ThinkingLevel::Minimal,
+                ThinkingLevel::Low,
+                ThinkingLevel::High,
+                ThinkingLevel::Max,
+            ]
+        );
+
+        let harmony = serde_json::json!({
+            "capabilities": ["completion", "thinking"],
+            "renderer": "harmony"
+        });
+        assert_eq!(
+            model_capabilities(&harmony).unwrap().thinking_levels,
+            vec![
+                ThinkingLevel::Low,
+                ThinkingLevel::Medium,
+                ThinkingLevel::High,
+            ]
+        );
     }
 
     #[test]
@@ -3175,5 +4267,36 @@ mod tests {
                 ..
             } if language == "cs"
         ));
+    }
+
+    #[test]
+    fn reads_current_and_legacy_generated_image_payloads() {
+        let current = serde_json::json!({
+            "data": [{ "b64_json": "current-image" }]
+        });
+        let legacy = serde_json::json!({ "image": "legacy-image" });
+
+        assert_eq!(generated_image_payload(&current), Some("current-image"));
+        assert_eq!(generated_image_payload(&legacy), Some("legacy-image"));
+        assert_eq!(generated_image_payload(&serde_json::json!({})), None);
+    }
+
+    #[test]
+    fn markdown_images_block_local_network_addresses() {
+        assert!(remote_image_url_is_safe(
+            &url::Url::parse("https://images.example.com/cat.png").unwrap()
+        ));
+        for blocked in [
+            "http://localhost/image.png",
+            "http://127.0.0.1/image.png",
+            "http://169.254.10.2/image.png",
+            "http://[::1]/image.png",
+            "file:///tmp/private.png",
+        ] {
+            assert!(
+                !remote_image_url_is_safe(&url::Url::parse(blocked).unwrap()),
+                "{blocked} should be blocked"
+            );
+        }
     }
 }
