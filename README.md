@@ -1,3 +1,6 @@
+> # Where is v0.6.0?
+We have moved, and 0.6.0 has been renamed to 1.0.0: https://github.com/logancammish/locoryn
+
 <div align="center">
 
 # Ollama GUI Interface
